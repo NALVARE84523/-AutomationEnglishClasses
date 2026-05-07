@@ -176,8 +176,49 @@ async def encontrar_primera_clase_pendiente(page):
 
 # ─── Hacer click en Asignar para abrir modal de día/hora ──────────────────────
 
+async def cerrar_modal_614(page):
+    """Cierra el iframe/popup de wv0614a si está abierto, para liberar el overlay."""
+    for f in page.frames:
+        if "wv0614" in f.url:
+            log("   Cerrando modal wv0614a...")
+            # Intentar click en Regresar dentro del frame
+            try:
+                btn = await f.query_selector("#BUTTON2, input[value='Regresar'], input[value='Cancelar']")
+                if btn:
+                    await btn.click()
+                    await esperar(1000)
+                    return
+            except:
+                pass
+            # Buscar el botón X del popup en la página principal
+            try:
+                x_btn = page.locator(".gx-popup-close, img[src*='exitIcon'], [id*='gxp'][id$='_x']").first
+                if await x_btn.count() > 0:
+                    await x_btn.click()
+                    await esperar(1000)
+                    return
+            except:
+                pass
+            # Último recurso: ocultar el popup via JS
+            try:
+                await page.evaluate("""
+                    () => {
+                        const popups = document.querySelectorAll('.gx-popup');
+                        popups.forEach(p => p.style.display = 'none');
+                    }
+                """)
+                await esperar(500)
+            except:
+                pass
+            log("   Modal cerrada")
+            return
+
+
 async def abrir_modal_dia_hora(page):
     """Hace click en la primera fila pendiente y luego en el botón Asignar."""
+    # Primero asegurarse de que no haya un popup wv0614a bloqueando
+    await cerrar_modal_614(page)
+
     primera_fila, wv0613 = await encontrar_primera_clase_pendiente(page)
 
     log("   Click en fila de la clase...")
@@ -270,6 +311,9 @@ async def seleccionar_dia_y_hora(page, frame, label_hora):
     await dia_frame.click("#BUTTON1")
     await esperar(1500)
     log(f"   ✅ {label_hora} confirmada")
+    # Cerrar el popup wv0614a para liberar el overlay
+    await cerrar_modal_614(page)
+    await esperar(500)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
