@@ -142,33 +142,66 @@ async def seleccionar_plan(page):
         await screenshot(page, "error_grilla_planes.png")
         raise Exception(f"Grilla de planes no renderizó — plan {PLAN_COD} no visible")
 
-    # Hacer click en la celda del plan
-    celda_plan = page.locator(f"td:has-text('{PLAN_COD}')").first
-    log(f"   Click en celda del plan {PLAN_COD}...")
-    await celda_plan.click()
-    await esperar(page, 800)
+    # Hacer click en el TR de la fila del plan (GeneXus requiere click en tr[data-gxrow])
+    fila_plan = page.locator(f"tr[data-gxrow]").filter(has_text=PLAN_COD).first
+    if await fila_plan.count() == 0:
+        # Fallback: click en la celda
+        fila_plan = page.locator(f"td:has-text('{PLAN_COD}')").first
+    log(f"   Click en fila del plan {PLAN_COD}...")
+    await fila_plan.click()
+    await esperar(page, 600)
 
-    # Click en Iniciar y esperar que la grilla de clases aparezca
+    # Verificar que quedó seleccionada
+    seleccionada = page.locator("tr[data-gxselected]").first
+    cnt = await seleccionada.count()
+    log(f"   Fila seleccionada: {'Sí' if cnt > 0 else 'No detectada'}")
+
+    # Hacer click en Iniciar y esperar respuesta AJAX
+    # GeneXus a veces necesita que el foco esté en el botón primero
     log("   Click en Iniciar...")
-    await page.click("#W0030BUTTON1")
+    btn_iniciar = page.locator("#W0030BUTTON1")
+    await btn_iniciar.focus()
+    await esperar(page, 300)
+    await btn_iniciar.click()
 
     log("   Esperando grilla de clases (AJAX)...")
+    asignar_visible = False
+
+    # Intento 1: esperar normal
     try:
-        # Esperar que aparezca el botón Asignar — indica que wv0613 cargó
-        await page.wait_for_selector(
-            "#BUTTON1[value='Asignar']",
-            timeout=20000
-        )
+        await page.wait_for_selector("#BUTTON1[value='Asignar']", timeout=15000)
+        asignar_visible = True
         log("✅ Grilla de clases lista")
     except PlaywrightTimeout:
+        log("   Timeout intento 1 — probando via JS...")
+
+    # Intento 2: disparar click via JavaScript (por si GeneXus bloqueó el evento)
+    if not asignar_visible:
+        await page.evaluate("""
+            () => {
+                const row = document.querySelector('tr[data-gxselected]');
+                if (row) row.click();
+                setTimeout(() => {
+                    const btn = document.querySelector('#W0030BUTTON1');
+                    if (btn) btn.click();
+                }, 300);
+            }
+        """)
+        await esperar(page, 4000)
+        try:
+            await page.wait_for_selector("#BUTTON1[value='Asignar']", timeout=10000)
+            asignar_visible = True
+            log("✅ Grilla cargó tras JS click")
+        except PlaywrightTimeout:
+            pass
+
+    if not asignar_visible:
         await screenshot(page, "error_tras_iniciar.png")
-        # Log qué botones hay para diagnóstico
         import re
         html = await page.content()
-        botones = re.findall(r'<input[^>]*type=["\']button["\'][^>]*value=["\']([^"\']+)["\']', html)
-        log(f"   Botones visibles: {botones}")
+        botones = re.findall(r'<input[^>]*value=["\'](.*?)["\'][^>]*/>', html)
+        log(f"   Botones visibles: {botones[:10]}")
         raise Exception("Timeout — grilla de clases no cargó tras Iniciar")
-
 
 # ─── Buscar clase pendiente ────────────────────────────────────────────────────
 
