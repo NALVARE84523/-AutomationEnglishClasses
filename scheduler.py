@@ -1,6 +1,5 @@
 """
 Smart Idiomas - Agendador automático de clases
-Ejecuta todos los días a las 8am (Colombia) via GitHub Actions
 """
 
 import asyncio
@@ -11,7 +10,6 @@ import pytz
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Configuración ─────────────────────────────────────────────────────────────
 BASE_URL   = "https://schoolpack.smart.edu.co/idiomas"
 LOGIN_URL  = f"{BASE_URL}/alumnos.aspx"
 PLANES_URL = f"{BASE_URL}/wv0527.aspx?2UxxJsznnhFnikyCHt5r8u3UnECcT9qxNq7OemMxcG7Kag2xFv8lv6S4FQbMbYAEsD77lQVW8NPwj7DUz1OG8Q=="
@@ -20,15 +18,13 @@ USUARIO  = os.environ["SMART_USUARIO"]
 PASSWORD = os.environ["SMART_PASSWORD"]
 PLAN_COD = os.environ.get("SMART_PLAN", "INGA1B2")
 
-# Fila 0009 = 18:00-19:30  |  Fila 0010 = 19:30-21:00
 HORAS = [
-    {"fila": "0009", "label": "18:00"},
-    {"fila": "0010", "label": "19:30"},
+    {"label": "18:00"},
+    {"label": "19:30"},
 ]
 
 ZONA_COL = pytz.timezone("America/Bogota")
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
 def log(msg: str):
     hora = datetime.now(ZONA_COL).strftime("%H:%M:%S")
     print(f"[{hora}] {msg}", flush=True)
@@ -38,149 +34,67 @@ async def esperar(page, ms=800):
 
 async def screenshot(page, nombre="error_screenshot.png"):
     try:
-        await page.screenshot(path=nombre)
-        log(f"   📸 Screenshot: {nombre}")
+        await page.screenshot(path=nombre, full_page=True)
+        log(f"   📸 {nombre}")
     except:
         pass
 
 # ─── Login ─────────────────────────────────────────────────────────────────────
 
 async def hacer_login(page):
-    log("🔐 Navegando a login...")
+    log("🔐 Login...")
     await page.goto(LOGIN_URL, wait_until="networkidle")
-    log(f"   URL: {page.url}")
 
-    # Si ya hay sesión activa vamos directo al menú principal
     if "wv0480" in page.url or "wv0527" in page.url:
-        log("✅ Sesión activa detectada")
+        log("✅ Sesión activa")
         return
 
-    # Verificar campos
-    for selector in ["#vUSUCOD", "#vPASS", "#BUTTON1"]:
-        el = await page.query_selector(selector)
-        log(f"   {selector}: {'OK' if el else 'NO ENCONTRADO'}")
-
-    log("   Llenando credenciales...")
-    await page.click("#vUSUCOD")
-    await page.fill("#vUSUCOD", "")
     await page.type("#vUSUCOD", USUARIO, delay=80)
-
-    await page.click("#vPASS")
-    await page.fill("#vPASS", "")
     await page.type("#vPASS", PASSWORD, delay=80)
-
     await esperar(page, 500)
     await page.keyboard.press("Tab")
     await esperar(page, 300)
-
-    log("   Enviando login...")
-    # GeneXus hace: 1) abre popup msje.aspx, 2) redirige a wv0480.aspx
-    # No esperamos navegación completa porque abre una ventana emergente primero
     await page.click("#BUTTON1")
-    await esperar(page, 3000)  # Dar tiempo para que se procese el AJAX
+    await esperar(page, 3000)
 
-    log(f"   URL tras click: {page.url}")
-
-    # ── Cerrar la modal informativa (msje.aspx) si aparece ──
-    await cerrar_modal_informativa(page)
-
-    # Ahora deberíamos estar en wv0480 (menú principal)
-    url_final = page.url
-    log(f"   URL final: {url_final}")
-
-    if "wv0480" not in url_final and "wv0527" not in url_final:
-        await screenshot(page)
-        raise Exception(f"Login fallido — URL inesperada: {url_final}")
-
-    log("✅ Login exitoso")
-
-
-async def cerrar_modal_informativa(page):
-    """
-    Tras el login, GeneXus abre msje.aspx como popup/modal con un botón 'Regresar'.
-    Esta función detecta y cierra esa modal.
-    """
-    log("   Verificando modal informativa...")
-
-    # La modal puede abrirse en un popup (nueva página) o como overlay en la misma página
-    # Primero revisar si hay una nueva página abierta (popup real)
-    context = page.context
-    await esperar(page, 1500)
-
-    todas_las_paginas = context.pages
-    log(f"   Páginas abiertas: {len(todas_las_paginas)}")
-
-    for p in todas_las_paginas:
+    # Cerrar modal informativa si aparece
+    for p in page.context.pages:
         if "msje" in p.url:
-            log(f"   Modal detectada como popup: {p.url}")
-            await p.wait_for_load_state("networkidle")
-            btn = await p.query_selector("#BUTTON1")
-            if btn:
-                log("   Cerrando modal (click en Regresar)...")
-                await p.click("#BUTTON1")
+            await p.click("#BUTTON1")
+            await esperar(page, 1000)
+            break
+    else:
+        try:
+            btn = page.locator("input[value='Regresar'], img[src*='exitIcon']").first
+            if await btn.count() > 0:
+                await btn.click()
                 await esperar(page, 1000)
-            else:
-                await p.close()
-            log("   Modal cerrada")
-            await page.wait_for_load_state("networkidle")
-            return
+        except:
+            pass
 
-    # Si no es popup, puede ser un iframe o un overlay en la misma página
-    # Buscar el botón Regresar en la página principal o en iframes
-    try:
-        # Intentar en página principal
-        btn_regresar = page.locator("#BUTTON1[value='Regresar'], input[value='Regresar']").first
-        if await btn_regresar.count() > 0:
-            log("   Modal detectada en página principal — cerrando...")
-            await btn_regresar.click()
-            await page.wait_for_load_state("networkidle")
-            log("   Modal cerrada")
-            return
-    except:
-        pass
-
-    # Buscar el ícono X de cierre (exitIcon.svg)
-    try:
-        btn_x = page.locator("img[src*='exitIcon'], .gx-popup-close, [class*='close']").first
-        if await btn_x.count() > 0:
-            log("   Cerrando modal via ícono X...")
-            await btn_x.click()
-            await page.wait_for_load_state("networkidle")
-            log("   Modal cerrada")
-            return
-    except:
-        pass
-
-    log("   No se detectó modal — continuando")
-    # Navegar directamente a wv0480 como fallback
     await page.wait_for_load_state("networkidle")
+    log(f"   URL final: {page.url}")
+
+    if "wv0480" not in page.url and "wv0527" not in page.url:
+        await screenshot(page)
+        raise Exception(f"Login fallido — URL: {page.url}")
+    log("✅ Login OK")
 
 
-# ─── Navegar al módulo de programación ────────────────────────────────────────
+# ─── Navegar a Programación ────────────────────────────────────────────────────
 
 async def ir_a_programacion(page):
-    """Desde wv0480 (menú), hacer click en 'Programación'."""
-    log("📋 Navegando a Programación...")
-
+    log("📋 Ir a Programación...")
     if "wv0527" in page.url:
-        log("   Ya estamos en wv0527")
         return
-
-    if "wv0480" in page.url:
-        # Buscar el enlace/imagen de Programación en el menú
-        try:
-            prog = page.locator("img[src*='PROGRAMACION'], a:has-text('Programaci'), [title*='rogramaci']").first
-            if await prog.count() > 0:
-                log("   Click en Programación...")
-                async with page.expect_navigation(timeout=15000, wait_until="networkidle"):
-                    await prog.click()
-                log(f"   URL: {page.url}")
-                return
-        except PlaywrightTimeout:
-            log("   Timeout en navegación a Programación")
-
-    # Fallback: ir directo a la URL de planes
-    log("   Navegando directo a wv0527...")
+    try:
+        prog = page.locator("img[src*='PROGRAMACION'], a:has-text('Programaci'), [title*='rogramaci']").first
+        if await prog.count() > 0:
+            async with page.expect_navigation(timeout=15000, wait_until="networkidle"):
+                await prog.click()
+            return
+    except PlaywrightTimeout:
+        pass
     await page.goto(PLANES_URL, wait_until="networkidle")
     log(f"   URL: {page.url}")
 
@@ -188,157 +102,149 @@ async def ir_a_programacion(page):
 # ─── Seleccionar plan ──────────────────────────────────────────────────────────
 
 async def seleccionar_plan(page):
-    log(f"   Buscando plan {PLAN_COD} en la tabla...")
-    await page.wait_for_selector(".Grid", timeout=10000)
+    log(f"   Esperando que GeneXus renderice la grilla de planes...")
 
-    fila = page.locator("tr").filter(has_text=PLAN_COD).first
-    if await fila.count() == 0:
-        raise Exception(f"No se encontró el plan {PLAN_COD}")
+    # GeneXus renderiza las filas via JS desde W0030Grid1ContainerDataV
+    # Esperar a que aparezca una celda con el código del plan
+    try:
+        await page.wait_for_selector(
+            f"td:has-text('{PLAN_COD}')",
+            timeout=15000
+        )
+    except PlaywrightTimeout:
+        await screenshot(page, "error_grilla_planes.png")
+        raise Exception(f"Grilla de planes no renderizó — plan {PLAN_COD} no visible")
 
-    await fila.click()
-    await esperar(page, 400)
-    log(f"   Plan {PLAN_COD} seleccionado — click en Iniciar...")
+    # Hacer click en la celda del plan
+    celda_plan = page.locator(f"td:has-text('{PLAN_COD}')").first
+    log(f"   Click en celda del plan {PLAN_COD}...")
+    await celda_plan.click()
+    await esperar(page, 800)
+
+    # Click en Iniciar y esperar que la grilla de clases aparezca
+    log("   Click en Iniciar...")
     await page.click("#W0030BUTTON1")
-    await page.wait_for_load_state("networkidle")
-    await esperar(page, 1500)
 
-    # Screenshot para ver qué cargó tras click en Iniciar
-    await screenshot(page, "tras_iniciar.png")
-
-    # Verificar si abrió popup o frames
-    todas = page.context.pages
-    log(f"   Páginas abiertas tras Iniciar: {len(todas)}")
-    for i, p in enumerate(todas):
-        log(f"     [{i}] {p.url}")
-
-    frames = page.frames
-    log(f"   Frames en página: {len(frames)}")
-    for i, f in enumerate(frames):
-        log(f"     Frame [{i}]: {f.url}")
-
-    log("✅ Modal de clases abierta")
+    log("   Esperando grilla de clases (AJAX)...")
+    try:
+        # Esperar que aparezca el botón Asignar — indica que wv0613 cargó
+        await page.wait_for_selector(
+            "#BUTTON1[value='Asignar']",
+            timeout=20000
+        )
+        log("✅ Grilla de clases lista")
+    except PlaywrightTimeout:
+        await screenshot(page, "error_tras_iniciar.png")
+        # Log qué botones hay para diagnóstico
+        import re
+        html = await page.content()
+        botones = re.findall(r'<input[^>]*type=["\']button["\'][^>]*value=["\']([^"\']+)["\']', html)
+        log(f"   Botones visibles: {botones}")
+        raise Exception("Timeout — grilla de clases no cargó tras Iniciar")
 
 
 # ─── Buscar clase pendiente ────────────────────────────────────────────────────
 
-async def _get_modal_target(page):
-    """Devuelve la página/frame donde está cargada la modal wv0613."""
-    for p in page.context.pages:
-        if "wv0613" in p.url:
-            log(f"   wv0613 como popup: {p.url}")
-            return p
-    for f in page.frames:
-        if "wv0613" in f.url:
-            log(f"   wv0613 en frame: {f.url}")
-            return f
-    log("   wv0613 en página actual")
-    return page
-
-
 async def encontrar_primera_clase_pendiente(page):
-    log("🔍 Buscando primera clase pendiente...")
-    await esperar(page, 2000)
+    log("🔍 Buscando clase pendiente...")
+    pagina = 1
+    while True:
+        log(f"   Página {pagina}...")
+        await esperar(page, 500)
 
-    # Volcar HTML para diagnosticar qué hay en pantalla
-    html = await page.content()
-    log(f"   HTML length: {len(html)}")
+        # Filas con fondo rojo = pendientes
+        filas = page.locator("tr").filter(
+            has=page.locator("td[style*='FF6666'], td[style*='ff6666'], td[bgcolor='#FF6666']")
+        )
+        if await filas.count() == 0:
+            filas = page.locator("tr").filter(has_text="Pendiente")
+        if await filas.count() == 0:
+            # Intentar con cualquier fila de datos de la grilla
+            filas = page.locator("table tr").filter(has=page.locator("td")).nth(1)
 
-    # Buscar todos los inputs tipo button en la página
-    import re
-    botones = re.findall(r'<input[^>]*type=["\']?button["\']?[^>]*>', html, re.IGNORECASE)
-    log(f"   Botones encontrados: {len(botones)}")
-    for b in botones[:10]:
-        log(f"     {b[:150]}")
+        cnt = await filas.count() if hasattr(filas, 'count') else 1
+        if cnt > 0:
+            primera = filas.first if hasattr(filas, 'first') else filas
+            texto = await primera.text_content()
+            log(f"   Clase: {texto[:80].strip()}")
+            return primera
 
-    # Buscar cualquier input con value=Asignar (sin importar name)
-    asignar = re.findall(r'<input[^>]*[Aa]signar[^>]*>', html)
-    log(f"   Inputs con 'Asignar': {len(asignar)}")
-    for a in asignar[:5]:
-        log(f"     {a[:150]}")
-
-    # Guardar HTML completo para revisión
-    with open("pagina_tras_iniciar.html", "w") as f:
-        f.write(html)
-    log("   HTML guardado: pagina_tras_iniciar.html")
-
-    raise Exception("DIAGNÓSTICO COMPLETO — revisa el log y los artefactos")
+        btn_sig = page.locator("img[src*='PageNext'], [title='Siguiente página']").first
+        if await btn_sig.count() == 0:
+            raise Exception("No hay clases pendientes")
+        await btn_sig.click()
+        await page.wait_for_load_state("networkidle")
+        pagina += 1
 
 
 # ─── Seleccionar día y hora ───────────────────────────────────────────────────
 
 async def seleccionar_dia_y_hora(page, label_hora: str):
-    log(f"   Configurando horario {label_hora}...")
-    await page.wait_for_selector("#vDIA", timeout=10000)
+    log(f"   Horario {label_hora}...")
+    await page.wait_for_selector("#vDIA", timeout=15000)
     await esperar(page, 500)
 
     opciones = await page.eval_on_selector(
         "#vDIA",
         "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
     )
-    log(f"   Días disponibles: {[o['text'] for o in opciones]}")
+    log(f"   Días: {[o['text'] for o in opciones]}")
 
     if len(opciones) < 2:
-        raise Exception("Solo hay un día disponible")
+        raise Exception("No hay día disponible para mañana")
 
-    # Seleccionar mañana (última opción disponible)
-    valor_manana = opciones[-1]["value"]
-    await page.select_option("#vDIA", valor_manana)
+    await page.select_option("#vDIA", opciones[-1]["value"])
     await page.wait_for_load_state("networkidle")
     await esperar(page, 1000)
-    log(f"   Día: {opciones[-1]['text']}")
+    log(f"   Día seleccionado: {opciones[-1]['text']}")
 
-    # Buscar la hora en la tabla por texto
-    fila_hora = page.locator("tr").filter(has_text=label_hora).first
-    if await fila_hora.count() > 0:
-        await fila_hora.click()
+    # Click en la fila de la hora
+    fila = page.locator("tr").filter(has_text=label_hora).first
+    if await fila.count() > 0:
+        await fila.click()
     else:
         celda = page.locator(f"td:has-text('{label_hora}')").first
         if await celda.count() > 0:
             await celda.click()
         else:
-            raise Exception(f"No se encontró la hora {label_hora}")
+            raise Exception(f"Hora {label_hora} no encontrada en la tabla")
 
     await page.wait_for_load_state("networkidle")
     await esperar(page, 600)
-    log(f"   Hora {label_hora} seleccionada — confirmando...")
 
     await page.click("#BUTTON1")
     await page.wait_for_load_state("networkidle")
     await esperar(page, 800)
-    log(f"   ✅ Confirmado: {label_hora}")
+    log(f"   ✅ {label_hora} confirmada")
 
 
 # ─── Agendar una clase ────────────────────────────────────────────────────────
 
 async def agendar_una_clase(page, hora_config: dict):
     log(f"\n━━━ Agendando {hora_config['label']} ━━━")
-    fila_clase = await encontrar_primera_clase_pendiente(page)
-
-    log("   Click en clase (Asignar)...")
-    await fila_clase.click()
+    fila = await encontrar_primera_clase_pendiente(page)
+    await fila.click()
     await page.wait_for_load_state("networkidle")
-    await esperar(page, 800)
-
+    await esperar(page, 1000)
+    log(f"   URL tras click clase: {page.url}")
     await seleccionar_dia_y_hora(page, hora_config["label"])
-    log(f"🎉 Clase {hora_config['label']} agendada")
+    log(f"🎉 {hora_config['label']} agendada")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main():
-    hora_col = datetime.now(ZONA_COL)
-    log(f"🚀 Iniciando — {hora_col.strftime('%A %d/%m/%Y %H:%M')} Colombia")
+    log(f"🚀 {datetime.now(ZONA_COL).strftime('%A %d/%m/%Y %H:%M')} Colombia")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
-        context = await browser.new_context(
+        page = await (await browser.new_context(
             viewport={"width": 1280, "height": 800},
             locale="es-CO",
-        )
-        page = await context.new_page()
+        )).new_page()
 
         try:
             await hacer_login(page)
@@ -351,10 +257,11 @@ async def main():
                     await agendar_una_clase(page, hora)
                     await page.go_back()
                     await page.wait_for_load_state("networkidle")
-                    await esperar(page, 500)
+                    await esperar(page, 800)
                 except Exception as e:
-                    log(f"⚠️  Error en {hora['label']}: {e}")
+                    log(f"⚠️  Error {hora['label']}: {e}")
                     errores.append(f"{hora['label']}: {e}")
+                    await screenshot(page, f"error_{hora['label'].replace(':','')}.png")
                     try:
                         await page.goto(PLANES_URL, wait_until="networkidle")
                         await seleccionar_plan(page)
@@ -362,20 +269,18 @@ async def main():
                         pass
 
             if errores:
-                log("⚠️  Proceso con errores:")
                 for err in errores:
-                    log(f"   - {err}")
+                    log(f"   ❌ {err}")
                 sys.exit(1)
             else:
                 log("✅ Todas las clases agendadas")
 
         except Exception as e:
-            log(f"❌ Error fatal: {e}")
+            log(f"❌ Fatal: {e}")
             await screenshot(page)
             raise
         finally:
             await browser.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
