@@ -16,14 +16,10 @@ BASE_URL   = "https://schoolpack.smart.edu.co/idiomas"
 LOGIN_URL  = f"{BASE_URL}/alumnos.aspx"
 PLANES_URL = f"{BASE_URL}/wv0527.aspx?2UxxJsznnhFnikyCHt5r8u3UnECcT9qxNq7OemMxcG7Kag2xFv8lv6S4FQbMbYAEsD77lQVW8NPwj7DUz1OG8Q=="
 
-# Credenciales — vienen de variables de entorno (nunca hardcodeadas)
-USUARIO    = os.environ["SMART_USUARIO"]   # tu número de cédula
-PASSWORD   = os.environ["SMART_PASSWORD"]
+USUARIO  = os.environ["SMART_USUARIO"]
+PASSWORD = os.environ["SMART_PASSWORD"]
+PLAN_COD = os.environ.get("SMART_PLAN", "INGA1B2")
 
-# Plan que quieres agendar (código del plan)
-PLAN_COD   = os.environ.get("SMART_PLAN", "INGA1B2")
-
-# Horas a agendar: filas en la tabla de wv0614a
 # Fila 0009 = 18:00-19:30  |  Fila 0010 = 19:30-21:00
 HORAS = [
     {"fila": "0009", "label": "18:00"},
@@ -40,19 +36,17 @@ def log(msg: str):
 async def esperar(page, ms=800):
     await page.wait_for_timeout(ms)
 
-# ─── Pasos del flujo ───────────────────────────────────────────────────────────
+# ─── Login ─────────────────────────────────────────────────────────────────────
 
 async def hacer_login(page):
     log("🔐 Navegando a login...")
     await page.goto(LOGIN_URL, wait_until="networkidle")
     log(f"   URL actual: {page.url}")
 
-    # Verificar si ya hay sesión activa (redirect a wv0527)
     if "wv0527" in page.url:
         log("✅ Ya había sesión activa")
         return
 
-    # Verificar que los campos existen
     campo_usuario = await page.query_selector("#vUSUCOD")
     campo_pass    = await page.query_selector("#vPASS")
     btn_confirmar = await page.query_selector("#BUTTON1")
@@ -63,120 +57,95 @@ async def hacer_login(page):
 
     if not campo_usuario or not campo_pass:
         await page.screenshot(path="error_screenshot.png")
-        raise Exception("❌ No se encontraron los campos de login en la página")
+        raise Exception("No se encontraron los campos de login")
 
     log("   Llenando credenciales...")
-    # Limpiar primero y luego llenar (más robusto con GeneXus)
     await page.click("#vUSUCOD")
     await page.fill("#vUSUCOD", "")
-    await page.type("#vUSUCOD", USUARIO, delay=50)
+    await page.type("#vUSUCOD", USUARIO, delay=80)
 
     await page.click("#vPASS")
     await page.fill("#vPASS", "")
-    await page.type("#vPASS", PASSWORD, delay=50)
+    await page.type("#vPASS", PASSWORD, delay=80)
 
-    await esperar(page, 500)
+    await esperar(page, 600)
 
-    # GeneXus a veces requiere Tab antes del submit para disparar el onchange
+    # Tab dispara el onblur/onchange de GeneXus antes del submit
     await page.keyboard.press("Tab")
-    await esperar(page, 300)
+    await esperar(page, 400)
 
-    log("   Haciendo click en Confirmar...")
-    await page.click("#BUTTON1")
-
-    # Esperar navegación — GeneXus puede ser lento
+    log("   Haciendo click en Confirmar (esperando navegación)...")
     try:
-        await page.wait_for_url("**/wv0527**", timeout=15000)
-        log("✅ Login exitoso — redirigido a wv0527")
-        return
+        # expect_navigation captura el redirect AJAX de GeneXus
+        async with page.expect_navigation(timeout=20000, wait_until="networkidle"):
+            await page.click("#BUTTON1")
     except PlaywrightTimeout:
-        pass
+        log("   Timeout en navegación — revisando URL...")
 
-    # Si no hubo redirect, ver qué pasó
     url_actual = page.url
     log(f"   URL tras login: {url_actual}")
 
-    # Buscar mensaje de error en la página
-    contenido = await page.content()
-    errores_posibles = ["incorrecta", "inválid", "no existe", "error", "incorrecto"]
-    for err in errores_posibles:
-        if err.lower() in contenido.lower():
-            log(f"   Mensaje de error detectado en página (contiene: '{err}')")
-            break
-
-    await page.screenshot(path="error_screenshot.png")
-
     if "wv0527" not in url_actual:
-        raise Exception(
-            f"❌ Login fallido — URL actual: {url_actual}. "
-            "Verifica usuario/contraseña en los Repository secrets."
-        )
+        contenido = await page.content()
+        msg_extra = ""
+        for err in ["incorrecta", "invalida", "no existe", "incorrecto", "vEXISTE"]:
+            if err.lower() in contenido.lower():
+                msg_extra = f" — página contiene '{err}'"
+                break
+        await page.screenshot(path="error_screenshot.png")
+        raise Exception(f"Login fallido — URL: {url_actual}{msg_extra}")
 
+    log("✅ Login exitoso")
+
+
+# ─── Seleccionar plan ──────────────────────────────────────────────────────────
 
 async def seleccionar_plan(page):
     log(f"📋 Buscando plan {PLAN_COD}...")
 
-    # Navegar a la pantalla de planes si no estamos ahí
     if "wv0527" not in page.url:
         await page.goto(PLANES_URL, wait_until="networkidle")
 
-    # Esperar a que cargue la grilla de planes
     await page.wait_for_selector(".Grid", timeout=10000)
 
-    # Buscar la fila del plan por código
-    # La grilla tiene celdas con el código del plan
     fila = page.locator("tr").filter(has_text=PLAN_COD).first
-    count = await fila.count()
-    if count == 0:
-        raise Exception(f"❌ No se encontró el plan {PLAN_COD} en la tabla")
+    if await fila.count() == 0:
+        raise Exception(f"No se encontró el plan {PLAN_COD}")
 
     await fila.click()
     log(f"   Plan {PLAN_COD} seleccionado")
     await esperar(page, 500)
 
-    # Click en botón Iniciar
     await page.click("#W0030BUTTON1")
     await page.wait_for_load_state("networkidle")
-    log("✅ Plan iniciado — modal de clases abierta")
+    log("✅ Modal de clases abierta")
 
+
+# ─── Buscar clase pendiente ────────────────────────────────────────────────────
 
 async def encontrar_primera_clase_pendiente(page):
-    """
-    Recorre la tabla paginada de wv0613 buscando la primera clase
-    con estado=2 (Pendiente por programar).
-    Devuelve el selector de la fila.
-    """
     log("🔍 Buscando primera clase pendiente...")
-
-    # wv0613 puede estar como modal o frame — esperar que cargue
-    # El modal tiene su propio form con la grilla
     await page.wait_for_selector("input[name='BUTTON1'][value='Asignar']", timeout=15000)
 
     pagina = 1
     while True:
         log(f"   Revisando página {pagina} de clases...")
 
-        # Las filas pendientes tienen fondo rojo (#FF6666) o estado texto "2"
-        # En el HTML: TPEAPROBO_XXXX con valor "2"
-        # La forma más robusta: buscar celdas con color rojo de fondo
         filas_pendientes = page.locator("tr").filter(
             has=page.locator("td[style*='FF6666'], td[style*='ff6666']")
         )
-
-        # Alternativa: buscar por texto del estado
         if await filas_pendientes.count() == 0:
             filas_pendientes = page.locator("tr").filter(has_text="Pendiente")
 
         if await filas_pendientes.count() > 0:
             primera = filas_pendientes.first
             texto = await primera.text_content()
-            log(f"   ✅ Clase pendiente encontrada: {texto[:60].strip()}")
+            log(f"   Clase pendiente: {texto[:60].strip()}")
             return primera
 
-        # No hay pendientes en esta página — ir a la siguiente
         btn_siguiente = page.locator("img[src*='PageNext']").first
         if await btn_siguiente.count() == 0:
-            raise Exception("❌ No se encontraron clases pendientes en ninguna página")
+            raise Exception("No hay clases pendientes")
 
         await btn_siguiente.click()
         await page.wait_for_load_state("networkidle")
@@ -184,29 +153,13 @@ async def encontrar_primera_clase_pendiente(page):
         pagina += 1
 
 
-async def click_asignar_clase(page, fila):
-    """Hace click en la fila de la clase para disparar el evento E'ASIGNAR'."""
-    log("   Haciendo click en la clase para asignar...")
-    await fila.click()
-    await page.wait_for_load_state("networkidle")
-    await esperar(page, 800)
-
+# ─── Seleccionar día y hora ───────────────────────────────────────────────────
 
 async def seleccionar_dia_y_hora(page, fila_hora: str, label_hora: str):
-    """
-    En wv0614a:
-    1. Selecciona el día de mañana en el select vDIA
-    2. Hace click en la fila de la tabla correspondiente a la hora deseada
-    3. Click en Confirmar
-    """
     log(f"   Configurando horario {label_hora}...")
-
-    # Esperar que cargue la pantalla de selección
     await page.wait_for_selector("#vDIA", timeout=10000)
     await esperar(page, 500)
 
-    # ── Seleccionar día de mañana ──
-    # El select tiene las opciones disponibles; seleccionar la segunda (mañana)
     opciones = await page.eval_on_selector(
         "#vDIA",
         "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
@@ -214,35 +167,22 @@ async def seleccionar_dia_y_hora(page, fila_hora: str, label_hora: str):
     log(f"   Días disponibles: {opciones}")
 
     if len(opciones) < 2:
-        raise Exception("⚠️  Solo hay un día disponible — puede que sea muy tarde para agendar mañana")
+        raise Exception("Solo hay un día disponible — muy tarde para agendar")
 
-    # Seleccionar el último día disponible (mañana)
     valor_manana = opciones[-1]["value"]
     await page.select_option("#vDIA", valor_manana)
     await page.wait_for_load_state("networkidle")
     await esperar(page, 1000)
-
     log(f"   Día seleccionado: {opciones[-1]['text']}")
 
-    # ── Click en la fila de la hora deseada ──
-    # Las filas de la tabla tienen IDs de evento ERFR.XXXX
-    # donde XXXX es el número de fila (0009 = 18:00, 0010 = 19:30)
-    # La tabla se renderiza dinámicamente; buscar por contenido de hora
-
-    # Primero intentar por texto de hora exacta
+    # Buscar la fila de la hora en la tabla
     fila_locator = page.locator("tr").filter(has_text=label_hora).first
-
     if await fila_locator.count() == 0:
-        # Fallback: buscar la fila por índice ERFR
-        fila_locator = page.locator(f"tr[data-row='{fila_hora}'], tr:nth-child({int(fila_hora)})")
-
-    if await fila_locator.count() == 0:
-        # Último recurso: hacer click directo en la celda con el texto de la hora
         celdas = page.locator(f"td:has-text('{label_hora}')")
         if await celdas.count() > 0:
             await celdas.first.click()
         else:
-            raise Exception(f"❌ No se encontró la hora {label_hora} en la tabla")
+            raise Exception(f"No se encontró la hora {label_hora} en la tabla")
     else:
         await fila_locator.click()
 
@@ -250,34 +190,31 @@ async def seleccionar_dia_y_hora(page, fila_hora: str, label_hora: str):
     await esperar(page, 600)
     log(f"   Hora {label_hora} seleccionada")
 
-    # ── Click en Confirmar ──
     await page.click("#BUTTON1")
     await page.wait_for_load_state("networkidle")
     await esperar(page, 800)
-    log(f"   ✅ Confirmado: {label_hora}")
+    log(f"   Confirmado: {label_hora}")
 
+
+# ─── Agendar una clase ────────────────────────────────────────────────────────
 
 async def agendar_una_clase(page, hora_config: dict):
-    """Agenda una clase para la hora especificada."""
     log(f"\n━━━ Agendando clase {hora_config['label']} ━━━")
 
-    # Buscar la primera clase pendiente
     fila_clase = await encontrar_primera_clase_pendiente(page)
+    await fila_clase.click()
+    await page.wait_for_load_state("networkidle")
+    await esperar(page, 800)
 
-    # Hacer click en la clase (dispara E'ASIGNAR'.)
-    await click_asignar_clase(page, fila_clase)
-
-    # Seleccionar día y hora en wv0614a
     await seleccionar_dia_y_hora(page, hora_config["fila"], hora_config["label"])
+    log(f"Clase {hora_config['label']} agendada")
 
-    log(f"🎉 ¡Clase {hora_config['label']} agendada exitosamente!")
 
-
-# ─── Main ──────────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main():
     hora_col = datetime.now(ZONA_COL)
-    log(f"🚀 Iniciando agendador — {hora_col.strftime('%A %d/%m/%Y %H:%M')} (Colombia)")
+    log(f"Iniciando agendador — {hora_col.strftime('%A %d/%m/%Y %H:%M')} (Colombia)")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -291,25 +228,19 @@ async def main():
         page = await context.new_page()
 
         try:
-            # Paso 1: Login
             await hacer_login(page)
-
-            # Paso 2: Seleccionar plan
             await seleccionar_plan(page)
 
-            # Paso 3+4+5: Agendar cada hora
             errores = []
             for hora in HORAS:
                 try:
                     await agendar_una_clase(page, hora)
-                    # Volver al plan para la siguiente clase
                     await page.go_back()
                     await page.wait_for_load_state("networkidle")
                     await esperar(page, 500)
                 except Exception as e:
-                    log(f"⚠️  Error en {hora['label']}: {e}")
+                    log(f"Error en {hora['label']}: {e}")
                     errores.append(f"{hora['label']}: {e}")
-                    # Intentar volver a un estado limpio
                     try:
                         await page.goto(PLANES_URL, wait_until="networkidle")
                         await seleccionar_plan(page)
@@ -317,19 +248,18 @@ async def main():
                         pass
 
             if errores:
-                log(f"\n⚠️  Proceso completado con errores:")
+                log("Proceso con errores:")
                 for err in errores:
-                    log(f"   - {err}")
+                    log(f"  - {err}")
                 sys.exit(1)
             else:
-                log("\n✅ Todas las clases agendadas correctamente")
+                log("Todas las clases agendadas correctamente")
 
         except Exception as e:
-            log(f"❌ Error fatal: {e}")
-            # Guardar screenshot para debug
+            log(f"Error fatal: {e}")
             try:
                 await page.screenshot(path="error_screenshot.png")
-                log("   📸 Screenshot guardado: error_screenshot.png")
+                log("Screenshot guardado")
             except:
                 pass
             raise
