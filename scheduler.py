@@ -131,52 +131,61 @@ async def seleccionar_plan(page):
         await screenshot(page, "error_sin_iframe.png")
         raise Exception("Iframe wv0613 no apareció tras click en Iniciar")
 
-    # Obtener el frame
-    iframe_el = page.locator("iframe[src*='wv0613']").first
-    frame = await iframe_el.content_frame()
-    if not frame:
-        raise Exception("No se pudo acceder al contenido del iframe")
+    # Obtener el frame usando frame_locator (API correcta de Playwright)
+    frame = page.frame_locator("iframe[src*='wv0613']")
 
     # Esperar que el iframe cargue el botón Asignar
     log("   Esperando contenido del iframe...")
-    await frame.wait_for_selector("#BUTTON1[value='Asignar']", timeout=15000)
+    await frame.locator("#BUTTON1[value='Asignar']").wait_for(timeout=15000)
     log("✅ Iframe de clases listo")
-    return frame
 
 
 # ─── Filtrar y encontrar primera clase pendiente ───────────────────────────────
 
-async def encontrar_primera_clase_pendiente(frame):
+async def get_wv0613_frame(page):
+    """Obtiene el Frame real de wv0613 desde page.frames."""
+    for f in page.frames:
+        if "wv0613" in f.url:
+            return f
+    return None
+
+
+async def encontrar_primera_clase_pendiente(page):
     log("🔍 Filtrando por 'Pendientes por programar'...")
 
+    wv0613 = await get_wv0613_frame(page)
+    if not wv0613:
+        raise Exception("Frame wv0613 no encontrado")
+
     # Seleccionar filtro "Pendientes por programar" (value=2)
-    await frame.select_option("#vTPEAPROBO", "2")
+    await wv0613.select_option("#vTPEAPROBO", "2")
     await esperar(2000)
 
-    # Buscar la primera fila de la grilla (Grid1ContainerRow_0001)
+    # Buscar la primera fila visible
     log("   Buscando primera clase pendiente...")
-    primera_fila = frame.locator("tr[id^='Grid1ContainerRow_']").first
-    cnt = await primera_fila.count()
+    filas = wv0613.locator("tr[id^='Grid1ContainerRow_']")
+    cnt = await filas.count()
     if cnt == 0:
         raise Exception("No hay clases pendientes por programar")
 
+    primera_fila = filas.first
     texto = await primera_fila.text_content()
     log(f"   Clase: {texto[:80].strip()}")
-    return primera_fila
+    return primera_fila, wv0613
 
 
 # ─── Hacer click en Asignar para abrir modal de día/hora ──────────────────────
 
-async def abrir_modal_dia_hora(frame):
+async def abrir_modal_dia_hora(page):
     """Hace click en la primera fila pendiente y luego en el botón Asignar."""
-    primera_fila = await encontrar_primera_clase_pendiente(frame)
+    primera_fila, wv0613 = await encontrar_primera_clase_pendiente(page)
 
     log("   Click en fila de la clase...")
     await primera_fila.click()
     await esperar(500)
 
     log("   Click en Asignar...")
-    await frame.click("#BUTTON1[value='Asignar']")
+    await wv0613.locator("#BUTTON1[value='Asignar']").click()
     await esperar(2000)
 
 
@@ -191,33 +200,45 @@ async def seleccionar_dia_y_hora(page, frame, label_hora):
     dia_frame = frame  # por defecto, buscar en el mismo frame
 
     # Verificar si hay un iframe anidado para wv0614a
-    try:
-        iframe_614 = frame.locator("iframe[src*='wv0614']").first
-        if await iframe_614.count() > 0:
-            dia_frame = await iframe_614.content_frame()
-            log("   Modal día/hora en iframe anidado")
-    except:
-        pass
+    # wv0614a puede abrirse en: iframe anidado dentro de wv0613, o frame en página principal
+    dia_frame = None
 
-    # Si no, buscar en la página principal
-    if dia_frame == frame:
+    # Buscar en frames reales de la página (page.frames incluye todos los iframes)
+    await esperar(2000)
+    for f in page.frames:
+        if "wv0614" in f.url:
+            dia_frame = f
+            log(f"   Modal día/hora en frame: {f.url}")
+            break
+
+    # Si no hay frame wv0614, buscar en el mismo iframe wv0613
+    if not dia_frame:
         try:
-            await frame.wait_for_selector("#vDIA", timeout=5000)
+            await frame.locator("#vDIA").wait_for(timeout=5000)
+            # frame_locator no tiene eval — usar page.frames para encontrarlo
+            for f in page.frames:
+                if "wv0613" in f.url:
+                    dia_frame = f
+                    break
         except PlaywrightTimeout:
-            # Buscar en página principal
-            try:
-                await page.wait_for_selector("#vDIA", timeout=5000)
-                dia_frame = page
-                log("   Modal día/hora en página principal")
-            except PlaywrightTimeout:
-                # Buscar en cualquier iframe de la página principal
-                for f in page.frames:
-                    if "wv0614" in f.url:
-                        dia_frame = f
-                        log(f"   Modal día/hora en frame: {f.url}")
-                        break
+            pass
 
-    await dia_frame.wait_for_selector("#vDIA", timeout=15000)
+    # Último recurso: buscar en cualquier frame que tenga #vDIA
+    if not dia_frame:
+        for f in page.frames:
+            try:
+                el = await f.query_selector("#vDIA")
+                if el:
+                    dia_frame = f
+                    log(f"   #vDIA encontrado en frame: {f.url}")
+                    break
+            except:
+                continue
+
+    if not dia_frame:
+        raise Exception("No se encontró el selector #vDIA en ningún frame")
+
+    await dia_frame.wait_for_selector("#vDIA", timeout=10000)
     await esperar(500)
 
     opciones = await dia_frame.eval_on_selector(
@@ -269,23 +290,19 @@ async def main():
         try:
             await hacer_login(page)
             await ir_a_programacion(page)
-            frame = await seleccionar_plan(page)
+            await seleccionar_plan(page)
 
             errores = []
             for label_hora in HORAS:
                 try:
                     log(f"\n━━━ Agendando {label_hora} ━━━")
-                    await abrir_modal_dia_hora(frame)
-                    await seleccionar_dia_y_hora(page, frame, label_hora)
+                    await abrir_modal_dia_hora(page)
+                    await seleccionar_dia_y_hora(page, None, label_hora)
                     log(f"🎉 {label_hora} agendada")
                     # Volver al iframe para la siguiente clase
                     await esperar(1000)
                     # Re-obtener el frame por si se recargó
-                    try:
-                        iframe_el = page.locator("iframe[src*='wv0613']").first
-                        frame = await iframe_el.content_frame()
-                    except:
-                        pass
+                    pass  # frame se re-obtiene dinámicamente en cada llamada
                 except Exception as e:
                     log(f"⚠️  Error {label_hora}: {e}")
                     errores.append(f"{label_hora}: {e}")
