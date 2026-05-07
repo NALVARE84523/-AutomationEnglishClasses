@@ -43,7 +43,7 @@ async def screenshot(page, nombre="error_screenshot.png"):
 
 async def hacer_login(page):
     log("🔐 Login...")
-    await page.goto(LOGIN_URL, wait_until="networkidle")
+    await page.goto(LOGIN_URL, wait_until="load")
 
     if "wv0480" in page.url or "wv0527" in page.url:
         log("✅ Sesión activa")
@@ -58,21 +58,48 @@ async def hacer_login(page):
     await esperar(page, 3000)
 
     # Cerrar modal informativa si aparece
+    await esperar(page, 2000)  # Dar tiempo a que aparezca la modal
+
+    modal_cerrada = False
     for p in page.context.pages:
         if "msje" in p.url:
-            await p.click("#BUTTON1")
-            await esperar(page, 1000)
+            log("   Modal como popup — cerrando...")
+            try:
+                await p.click("#BUTTON1")
+            except:
+                await p.close()
+            await esperar(page, 2000)
+            modal_cerrada = True
             break
-    else:
+
+    if not modal_cerrada:
         try:
-            btn = page.locator("input[value='Regresar'], img[src*='exitIcon']").first
+            btn = page.locator("input[value='Regresar']").first
             if await btn.count() > 0:
+                log("   Modal en página — cerrando con Regresar...")
                 await btn.click()
-                await esperar(page, 1000)
+                await esperar(page, 2000)
+                modal_cerrada = True
         except:
             pass
 
-    await page.wait_for_load_state("networkidle")
+    if not modal_cerrada:
+        try:
+            btn_x = page.locator("img[src*='exitIcon'], .gx-popup-close").first
+            if await btn_x.count() > 0:
+                log("   Cerrando modal con X...")
+                await btn_x.click()
+                await esperar(page, 2000)
+        except:
+            pass
+
+    # Esperar URL destino sin networkidle (la plataforma tiene polling constante)
+    for _ in range(20):
+        url = page.url
+        if "wv0480" in url or "wv0527" in url:
+            break
+        await esperar(page, 500)
+
     log(f"   URL final: {page.url}")
 
     if "wv0480" not in page.url and "wv0527" not in page.url:
@@ -90,12 +117,12 @@ async def ir_a_programacion(page):
     try:
         prog = page.locator("img[src*='PROGRAMACION'], a:has-text('Programaci'), [title*='rogramaci']").first
         if await prog.count() > 0:
-            async with page.expect_navigation(timeout=15000, wait_until="networkidle"):
+            async with page.expect_navigation(timeout=15000, wait_until="load"):
                 await prog.click()
             return
     except PlaywrightTimeout:
         pass
-    await page.goto(PLANES_URL, wait_until="networkidle")
+    await page.goto(PLANES_URL, wait_until="load")
     log(f"   URL: {page.url}")
 
 
@@ -173,7 +200,7 @@ async def encontrar_primera_clase_pendiente(page):
         if await btn_sig.count() == 0:
             raise Exception("No hay clases pendientes")
         await btn_sig.click()
-        await page.wait_for_load_state("networkidle")
+        await page.wait_for_load_state("domcontentloaded")
         pagina += 1
 
 
@@ -194,7 +221,7 @@ async def seleccionar_dia_y_hora(page, label_hora: str):
         raise Exception("No hay día disponible para mañana")
 
     await page.select_option("#vDIA", opciones[-1]["value"])
-    await page.wait_for_load_state("networkidle")
+    await page.wait_for_load_state("domcontentloaded")
     await esperar(page, 1000)
     log(f"   Día seleccionado: {opciones[-1]['text']}")
 
@@ -209,11 +236,11 @@ async def seleccionar_dia_y_hora(page, label_hora: str):
         else:
             raise Exception(f"Hora {label_hora} no encontrada en la tabla")
 
-    await page.wait_for_load_state("networkidle")
+    await page.wait_for_load_state("domcontentloaded")
     await esperar(page, 600)
 
     await page.click("#BUTTON1")
-    await page.wait_for_load_state("networkidle")
+    await page.wait_for_load_state("domcontentloaded")
     await esperar(page, 800)
     log(f"   ✅ {label_hora} confirmada")
 
@@ -224,7 +251,7 @@ async def agendar_una_clase(page, hora_config: dict):
     log(f"\n━━━ Agendando {hora_config['label']} ━━━")
     fila = await encontrar_primera_clase_pendiente(page)
     await fila.click()
-    await page.wait_for_load_state("networkidle")
+    await page.wait_for_load_state("domcontentloaded")
     await esperar(page, 1000)
     log(f"   URL tras click clase: {page.url}")
     await seleccionar_dia_y_hora(page, hora_config["label"])
@@ -256,14 +283,14 @@ async def main():
                 try:
                     await agendar_una_clase(page, hora)
                     await page.go_back()
-                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_load_state("domcontentloaded")
                     await esperar(page, 800)
                 except Exception as e:
                     log(f"⚠️  Error {hora['label']}: {e}")
                     errores.append(f"{hora['label']}: {e}")
                     await screenshot(page, f"error_{hora['label'].replace(':','')}.png")
                     try:
-                        await page.goto(PLANES_URL, wait_until="networkidle")
+                        await page.goto(PLANES_URL, wait_until="load")
                         await seleccionar_plan(page)
                     except:
                         pass
