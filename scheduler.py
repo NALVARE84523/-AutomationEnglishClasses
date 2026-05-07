@@ -18,19 +18,15 @@ USUARIO  = os.environ["SMART_USUARIO"]
 PASSWORD = os.environ["SMART_PASSWORD"]
 PLAN_COD = os.environ.get("SMART_PLAN", "INGA1B2")
 
-HORAS = [
-    {"label": "18:00"},
-    {"label": "19:30"},
-]
+HORAS = ["18:00", "19:30"]
 
 ZONA_COL = pytz.timezone("America/Bogota")
 
-def log(msg: str):
-    hora = datetime.now(ZONA_COL).strftime("%H:%M:%S")
-    print(f"[{hora}] {msg}", flush=True)
+def log(msg):
+    print(f"[{datetime.now(ZONA_COL).strftime('%H:%M:%S')}] {msg}", flush=True)
 
-async def esperar(page, ms=800):
-    await page.wait_for_timeout(ms)
+async def esperar(ms=800):
+    await asyncio.sleep(ms / 1000)
 
 async def screenshot(page, nombre="error_screenshot.png"):
     try:
@@ -44,64 +40,46 @@ async def screenshot(page, nombre="error_screenshot.png"):
 async def hacer_login(page):
     log("🔐 Login...")
     await page.goto(LOGIN_URL, wait_until="load")
-
     if "wv0480" in page.url or "wv0527" in page.url:
         log("✅ Sesión activa")
         return
 
     await page.type("#vUSUCOD", USUARIO, delay=80)
     await page.type("#vPASS", PASSWORD, delay=80)
-    await esperar(page, 500)
+    await esperar(500)
     await page.keyboard.press("Tab")
-    await esperar(page, 300)
+    await esperar(300)
     await page.click("#BUTTON1")
-    await esperar(page, 3000)
+    await esperar(3000)
 
-    # Cerrar modal informativa si aparece
-    await esperar(page, 2000)  # Dar tiempo a que aparezca la modal
-
-    modal_cerrada = False
+    # Cerrar modal informativa
+    await esperar(1500)
     for p in page.context.pages:
         if "msje" in p.url:
-            log("   Modal como popup — cerrando...")
+            log("   Modal popup — cerrando...")
+            try: await p.click("#BUTTON1")
+            except: await p.close()
+            await esperar(2000)
+            break
+    else:
+        for selector in ["input[value='Regresar']", "img[src*='exitIcon']", ".gx-popup-close"]:
             try:
-                await p.click("#BUTTON1")
+                btn = page.locator(selector).first
+                if await btn.count() > 0:
+                    log(f"   Modal en página — cerrando con {selector}...")
+                    await btn.click()
+                    await esperar(2000)
+                    break
             except:
-                await p.close()
-            await esperar(page, 2000)
-            modal_cerrada = True
-            break
+                continue
 
-    if not modal_cerrada:
-        try:
-            btn = page.locator("input[value='Regresar']").first
-            if await btn.count() > 0:
-                log("   Modal en página — cerrando con Regresar...")
-                await btn.click()
-                await esperar(page, 2000)
-                modal_cerrada = True
-        except:
-            pass
-
-    if not modal_cerrada:
-        try:
-            btn_x = page.locator("img[src*='exitIcon'], .gx-popup-close").first
-            if await btn_x.count() > 0:
-                log("   Cerrando modal con X...")
-                await btn_x.click()
-                await esperar(page, 2000)
-        except:
-            pass
-
-    # Esperar URL destino sin networkidle (la plataforma tiene polling constante)
+    # Esperar URL destino (sin networkidle — la plataforma tiene polling)
     for _ in range(20):
-        url = page.url
-        if "wv0480" in url or "wv0527" in url:
+        if "wv0480" in page.url or "wv0527" in page.url:
             break
-        await esperar(page, 500)
+        await esperar(500)
 
-    log(f"   URL final: {page.url}")
-
+    log(f"   URL: {page.url}")
     if "wv0480" not in page.url and "wv0527" not in page.url:
         await screenshot(page)
         raise Exception(f"Login fallido — URL: {page.url}")
@@ -126,125 +104,123 @@ async def ir_a_programacion(page):
     log(f"   URL: {page.url}")
 
 
-# ─── Seleccionar plan ──────────────────────────────────────────────────────────
+# ─── Seleccionar plan y abrir iframe de clases ────────────────────────────────
 
 async def seleccionar_plan(page):
-    log(f"   Esperando que GeneXus renderice la grilla de planes...")
+    log(f"   Esperando grilla de planes...")
+    await page.wait_for_selector(f"td:has-text('{PLAN_COD}')", timeout=15000)
 
-    # GeneXus renderiza las filas via JS desde W0030Grid1ContainerDataV
-    # Esperar a que aparezca una celda con el código del plan
-    try:
-        await page.wait_for_selector(
-            f"td:has-text('{PLAN_COD}')",
-            timeout=15000
-        )
-    except PlaywrightTimeout:
-        await screenshot(page, "error_grilla_planes.png")
-        raise Exception(f"Grilla de planes no renderizó — plan {PLAN_COD} no visible")
+    fila = page.locator("tr[data-gxrow]").filter(has_text=PLAN_COD).first
+    if await fila.count() == 0:
+        fila = page.locator(f"td:has-text('{PLAN_COD}')").first
+    log(f"   Click en plan {PLAN_COD}...")
+    await fila.click()
+    await esperar(600)
 
-    # Hacer click en el TR de la fila del plan (GeneXus requiere click en tr[data-gxrow])
-    fila_plan = page.locator(f"tr[data-gxrow]").filter(has_text=PLAN_COD).first
-    if await fila_plan.count() == 0:
-        # Fallback: click en la celda
-        fila_plan = page.locator(f"td:has-text('{PLAN_COD}')").first
-    log(f"   Click en fila del plan {PLAN_COD}...")
-    await fila_plan.click()
-    await esperar(page, 600)
-
-    # Verificar que quedó seleccionada
-    seleccionada = page.locator("tr[data-gxselected]").first
-    cnt = await seleccionada.count()
-    log(f"   Fila seleccionada: {'Sí' if cnt > 0 else 'No detectada'}")
-
-    # Hacer click en Iniciar y esperar respuesta AJAX
-    # GeneXus a veces necesita que el foco esté en el botón primero
     log("   Click en Iniciar...")
-    btn_iniciar = page.locator("#W0030BUTTON1")
-    await btn_iniciar.focus()
-    await esperar(page, 300)
-    await btn_iniciar.click()
+    await page.locator("#W0030BUTTON1").focus()
+    await esperar(200)
+    await page.locator("#W0030BUTTON1").click()
+    await esperar(2000)
 
-    log("   Esperando grilla de clases (AJAX)...")
-    asignar_visible = False
-
-    # Intento 1: esperar normal
+    # wv0613 carga dentro de un IFRAME — esperar que aparezca
+    log("   Esperando iframe wv0613...")
     try:
-        await page.wait_for_selector("#BUTTON1[value='Asignar']", timeout=15000)
-        asignar_visible = True
-        log("✅ Grilla de clases lista")
+        await page.wait_for_selector("iframe[src*='wv0613']", timeout=20000)
     except PlaywrightTimeout:
-        log("   Timeout intento 1 — probando via JS...")
+        await screenshot(page, "error_sin_iframe.png")
+        raise Exception("Iframe wv0613 no apareció tras click en Iniciar")
 
-    # Intento 2: disparar click via JavaScript (por si GeneXus bloqueó el evento)
-    if not asignar_visible:
-        await page.evaluate("""
-            () => {
-                const row = document.querySelector('tr[data-gxselected]');
-                if (row) row.click();
-                setTimeout(() => {
-                    const btn = document.querySelector('#W0030BUTTON1');
-                    if (btn) btn.click();
-                }, 300);
-            }
-        """)
-        await esperar(page, 4000)
+    # Obtener el frame
+    iframe_el = page.locator("iframe[src*='wv0613']").first
+    frame = await iframe_el.content_frame()
+    if not frame:
+        raise Exception("No se pudo acceder al contenido del iframe")
+
+    # Esperar que el iframe cargue el botón Asignar
+    log("   Esperando contenido del iframe...")
+    await frame.wait_for_selector("#BUTTON1[value='Asignar']", timeout=15000)
+    log("✅ Iframe de clases listo")
+    return frame
+
+
+# ─── Filtrar y encontrar primera clase pendiente ───────────────────────────────
+
+async def encontrar_primera_clase_pendiente(frame):
+    log("🔍 Filtrando por 'Pendientes por programar'...")
+
+    # Seleccionar filtro "Pendientes por programar" (value=2)
+    await frame.select_option("#vTPEAPROBO", "2")
+    await esperar(2000)
+
+    # Buscar la primera fila de la grilla (Grid1ContainerRow_0001)
+    log("   Buscando primera clase pendiente...")
+    primera_fila = frame.locator("tr[id^='Grid1ContainerRow_']").first
+    cnt = await primera_fila.count()
+    if cnt == 0:
+        raise Exception("No hay clases pendientes por programar")
+
+    texto = await primera_fila.text_content()
+    log(f"   Clase: {texto[:80].strip()}")
+    return primera_fila
+
+
+# ─── Hacer click en Asignar para abrir modal de día/hora ──────────────────────
+
+async def abrir_modal_dia_hora(frame):
+    """Hace click en la primera fila pendiente y luego en el botón Asignar."""
+    primera_fila = await encontrar_primera_clase_pendiente(frame)
+
+    log("   Click en fila de la clase...")
+    await primera_fila.click()
+    await esperar(500)
+
+    log("   Click en Asignar...")
+    await frame.click("#BUTTON1[value='Asignar']")
+    await esperar(2000)
+
+
+# ─── Seleccionar día y hora en la modal de wv0614a ────────────────────────────
+
+async def seleccionar_dia_y_hora(page, frame, label_hora):
+    log(f"   Configurando {label_hora}...")
+
+    # La modal de día/hora (wv0614a) puede abrirse como otro iframe o popup
+    # Esperar que aparezca el select #vDIA
+    # Primero buscar en un nuevo iframe dentro del frame actual
+    dia_frame = frame  # por defecto, buscar en el mismo frame
+
+    # Verificar si hay un iframe anidado para wv0614a
+    try:
+        iframe_614 = frame.locator("iframe[src*='wv0614']").first
+        if await iframe_614.count() > 0:
+            dia_frame = await iframe_614.content_frame()
+            log("   Modal día/hora en iframe anidado")
+    except:
+        pass
+
+    # Si no, buscar en la página principal
+    if dia_frame == frame:
         try:
-            await page.wait_for_selector("#BUTTON1[value='Asignar']", timeout=10000)
-            asignar_visible = True
-            log("✅ Grilla cargó tras JS click")
+            await frame.wait_for_selector("#vDIA", timeout=5000)
         except PlaywrightTimeout:
-            pass
+            # Buscar en página principal
+            try:
+                await page.wait_for_selector("#vDIA", timeout=5000)
+                dia_frame = page
+                log("   Modal día/hora en página principal")
+            except PlaywrightTimeout:
+                # Buscar en cualquier iframe de la página principal
+                for f in page.frames:
+                    if "wv0614" in f.url:
+                        dia_frame = f
+                        log(f"   Modal día/hora en frame: {f.url}")
+                        break
 
-    if not asignar_visible:
-        await screenshot(page, "error_tras_iniciar.png")
-        import re
-        html = await page.content()
-        botones = re.findall(r'<input[^>]*value=["\'](.*?)["\'][^>]*/>', html)
-        log(f"   Botones visibles: {botones[:10]}")
-        raise Exception("Timeout — grilla de clases no cargó tras Iniciar")
+    await dia_frame.wait_for_selector("#vDIA", timeout=15000)
+    await esperar(500)
 
-# ─── Buscar clase pendiente ────────────────────────────────────────────────────
-
-async def encontrar_primera_clase_pendiente(page):
-    log("🔍 Buscando clase pendiente...")
-    pagina = 1
-    while True:
-        log(f"   Página {pagina}...")
-        await esperar(page, 500)
-
-        # Filas con fondo rojo = pendientes
-        filas = page.locator("tr").filter(
-            has=page.locator("td[style*='FF6666'], td[style*='ff6666'], td[bgcolor='#FF6666']")
-        )
-        if await filas.count() == 0:
-            filas = page.locator("tr").filter(has_text="Pendiente")
-        if await filas.count() == 0:
-            # Intentar con cualquier fila de datos de la grilla
-            filas = page.locator("table tr").filter(has=page.locator("td")).nth(1)
-
-        cnt = await filas.count() if hasattr(filas, 'count') else 1
-        if cnt > 0:
-            primera = filas.first if hasattr(filas, 'first') else filas
-            texto = await primera.text_content()
-            log(f"   Clase: {texto[:80].strip()}")
-            return primera
-
-        btn_sig = page.locator("img[src*='PageNext'], [title='Siguiente página']").first
-        if await btn_sig.count() == 0:
-            raise Exception("No hay clases pendientes")
-        await btn_sig.click()
-        await page.wait_for_load_state("domcontentloaded")
-        pagina += 1
-
-
-# ─── Seleccionar día y hora ───────────────────────────────────────────────────
-
-async def seleccionar_dia_y_hora(page, label_hora: str):
-    log(f"   Horario {label_hora}...")
-    await page.wait_for_selector("#vDIA", timeout=15000)
-    await esperar(page, 500)
-
-    opciones = await page.eval_on_selector(
+    opciones = await dia_frame.eval_on_selector(
         "#vDIA",
         "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
     )
@@ -253,42 +229,26 @@ async def seleccionar_dia_y_hora(page, label_hora: str):
     if len(opciones) < 2:
         raise Exception("No hay día disponible para mañana")
 
-    await page.select_option("#vDIA", opciones[-1]["value"])
-    await page.wait_for_load_state("domcontentloaded")
-    await esperar(page, 1000)
-    log(f"   Día seleccionado: {opciones[-1]['text']}")
+    await dia_frame.select_option("#vDIA", opciones[-1]["value"])
+    await esperar(1500)
+    log(f"   Día: {opciones[-1]['text']}")
 
     # Click en la fila de la hora
-    fila = page.locator("tr").filter(has_text=label_hora).first
-    if await fila.count() > 0:
-        await fila.click()
+    fila_hora = dia_frame.locator("tr").filter(has_text=label_hora).first
+    if await fila_hora.count() > 0:
+        await fila_hora.click()
     else:
-        celda = page.locator(f"td:has-text('{label_hora}')").first
+        celda = dia_frame.locator(f"td:has-text('{label_hora}')").first
         if await celda.count() > 0:
             await celda.click()
         else:
-            raise Exception(f"Hora {label_hora} no encontrada en la tabla")
+            raise Exception(f"Hora {label_hora} no encontrada")
 
-    await page.wait_for_load_state("domcontentloaded")
-    await esperar(page, 600)
-
-    await page.click("#BUTTON1")
-    await page.wait_for_load_state("domcontentloaded")
-    await esperar(page, 800)
+    await esperar(600)
+    log(f"   Hora {label_hora} seleccionada — confirmando...")
+    await dia_frame.click("#BUTTON1")
+    await esperar(1500)
     log(f"   ✅ {label_hora} confirmada")
-
-
-# ─── Agendar una clase ────────────────────────────────────────────────────────
-
-async def agendar_una_clase(page, hora_config: dict):
-    log(f"\n━━━ Agendando {hora_config['label']} ━━━")
-    fila = await encontrar_primera_clase_pendiente(page)
-    await fila.click()
-    await page.wait_for_load_state("domcontentloaded")
-    await esperar(page, 1000)
-    log(f"   URL tras click clase: {page.url}")
-    await seleccionar_dia_y_hora(page, hora_config["label"])
-    log(f"🎉 {hora_config['label']} agendada")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -302,31 +262,34 @@ async def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         page = await (await browser.new_context(
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 1280, "height": 900},
             locale="es-CO",
         )).new_page()
 
         try:
             await hacer_login(page)
             await ir_a_programacion(page)
-            await seleccionar_plan(page)
+            frame = await seleccionar_plan(page)
 
             errores = []
-            for hora in HORAS:
+            for label_hora in HORAS:
                 try:
-                    await agendar_una_clase(page, hora)
-                    await page.go_back()
-                    await page.wait_for_load_state("domcontentloaded")
-                    await esperar(page, 800)
-                except Exception as e:
-                    log(f"⚠️  Error {hora['label']}: {e}")
-                    errores.append(f"{hora['label']}: {e}")
-                    await screenshot(page, f"error_{hora['label'].replace(':','')}.png")
+                    log(f"\n━━━ Agendando {label_hora} ━━━")
+                    await abrir_modal_dia_hora(frame)
+                    await seleccionar_dia_y_hora(page, frame, label_hora)
+                    log(f"🎉 {label_hora} agendada")
+                    # Volver al iframe para la siguiente clase
+                    await esperar(1000)
+                    # Re-obtener el frame por si se recargó
                     try:
-                        await page.goto(PLANES_URL, wait_until="load")
-                        await seleccionar_plan(page)
+                        iframe_el = page.locator("iframe[src*='wv0613']").first
+                        frame = await iframe_el.content_frame()
                     except:
                         pass
+                except Exception as e:
+                    log(f"⚠️  Error {label_hora}: {e}")
+                    errores.append(f"{label_hora}: {e}")
+                    await screenshot(page, f"error_{label_hora.replace(':','')}.png")
 
             if errores:
                 for err in errores:
