@@ -237,34 +237,31 @@ async def _get_modal_target(page):
 
 async def encontrar_primera_clase_pendiente(page):
     log("🔍 Buscando primera clase pendiente...")
-    target = await _get_modal_target(page)
-    await target.wait_for_selector("input[name='BUTTON1'][value='Asignar']", timeout=15000)
+    await esperar(page, 2000)
 
-    pagina = 1
-    while True:
-        log(f"   Página {pagina}...")
+    # Volcar HTML para diagnosticar qué hay en pantalla
+    html = await page.content()
+    log(f"   HTML length: {len(html)}")
 
-        # Clases pendientes tienen fondo rojo (#FF6666)
-        filas_pendientes = page.locator("tr").filter(
-            has=page.locator("td[style*='FF6666'], td[style*='ff6666']")
-        )
-        if await filas_pendientes.count() == 0:
-            filas_pendientes = page.locator("tr").filter(has_text="Pendiente")
+    # Buscar todos los inputs tipo button en la página
+    import re
+    botones = re.findall(r'<input[^>]*type=["\']?button["\']?[^>]*>', html, re.IGNORECASE)
+    log(f"   Botones encontrados: {len(botones)}")
+    for b in botones[:10]:
+        log(f"     {b[:150]}")
 
-        if await filas_pendientes.count() > 0:
-            primera = filas_pendientes.first
-            texto = await primera.text_content()
-            log(f"   Clase encontrada: {texto[:60].strip()}")
-            return primera
+    # Buscar cualquier input con value=Asignar (sin importar name)
+    asignar = re.findall(r'<input[^>]*[Aa]signar[^>]*>', html)
+    log(f"   Inputs con 'Asignar': {len(asignar)}")
+    for a in asignar[:5]:
+        log(f"     {a[:150]}")
 
-        btn_siguiente = page.locator("img[src*='PageNext']").first
-        if await btn_siguiente.count() == 0:
-            raise Exception("No hay clases pendientes")
+    # Guardar HTML completo para revisión
+    with open("pagina_tras_iniciar.html", "w") as f:
+        f.write(html)
+    log("   HTML guardado: pagina_tras_iniciar.html")
 
-        await btn_siguiente.click()
-        await page.wait_for_load_state("networkidle")
-        await esperar(page, 600)
-        pagina += 1
+    raise Exception("DIAGNÓSTICO COMPLETO — revisa el log y los artefactos")
 
 
 # ─── Seleccionar día y hora ───────────────────────────────────────────────────
