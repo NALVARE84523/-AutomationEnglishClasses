@@ -200,14 +200,45 @@ async def seleccionar_plan(page):
     log(f"   Plan {PLAN_COD} seleccionado — click en Iniciar...")
     await page.click("#W0030BUTTON1")
     await page.wait_for_load_state("networkidle")
+    await esperar(page, 1500)
+
+    # Screenshot para ver qué cargó tras click en Iniciar
+    await screenshot(page, "tras_iniciar.png")
+
+    # Verificar si abrió popup o frames
+    todas = page.context.pages
+    log(f"   Páginas abiertas tras Iniciar: {len(todas)}")
+    for i, p in enumerate(todas):
+        log(f"     [{i}] {p.url}")
+
+    frames = page.frames
+    log(f"   Frames en página: {len(frames)}")
+    for i, f in enumerate(frames):
+        log(f"     Frame [{i}]: {f.url}")
+
     log("✅ Modal de clases abierta")
 
 
 # ─── Buscar clase pendiente ────────────────────────────────────────────────────
 
+async def _get_modal_target(page):
+    """Devuelve la página/frame donde está cargada la modal wv0613."""
+    for p in page.context.pages:
+        if "wv0613" in p.url:
+            log(f"   wv0613 como popup: {p.url}")
+            return p
+    for f in page.frames:
+        if "wv0613" in f.url:
+            log(f"   wv0613 en frame: {f.url}")
+            return f
+    log("   wv0613 en página actual")
+    return page
+
+
 async def encontrar_primera_clase_pendiente(page):
     log("🔍 Buscando primera clase pendiente...")
-    await page.wait_for_selector("input[name='BUTTON1'][value='Asignar']", timeout=15000)
+    target = await _get_modal_target(page)
+    await target.wait_for_selector("input[name='BUTTON1'][value='Asignar']", timeout=15000)
 
     pagina = 1
     while True:
