@@ -45,22 +45,72 @@ async def esperar(page, ms=800):
 async def hacer_login(page):
     log("🔐 Navegando a login...")
     await page.goto(LOGIN_URL, wait_until="networkidle")
+    log(f"   URL actual: {page.url}")
 
     # Verificar si ya hay sesión activa (redirect a wv0527)
     if "wv0527" in page.url:
         log("✅ Ya había sesión activa")
         return
 
+    # Verificar que los campos existen
+    campo_usuario = await page.query_selector("#vUSUCOD")
+    campo_pass    = await page.query_selector("#vPASS")
+    btn_confirmar = await page.query_selector("#BUTTON1")
+
+    log(f"   Campo vUSUCOD encontrado: {campo_usuario is not None}")
+    log(f"   Campo vPASS encontrado:   {campo_pass is not None}")
+    log(f"   Botón BUTTON1 encontrado: {btn_confirmar is not None}")
+
+    if not campo_usuario or not campo_pass:
+        await page.screenshot(path="error_screenshot.png")
+        raise Exception("❌ No se encontraron los campos de login en la página")
+
     log("   Llenando credenciales...")
-    await page.fill("#vUSUCOD", USUARIO)
-    await page.fill("#vPASS", PASSWORD)
+    # Limpiar primero y luego llenar (más robusto con GeneXus)
+    await page.click("#vUSUCOD")
+    await page.fill("#vUSUCOD", "")
+    await page.type("#vUSUCOD", USUARIO, delay=50)
+
+    await page.click("#vPASS")
+    await page.fill("#vPASS", "")
+    await page.type("#vPASS", PASSWORD, delay=50)
+
+    await esperar(page, 500)
+
+    # GeneXus a veces requiere Tab antes del submit para disparar el onchange
+    await page.keyboard.press("Tab")
+    await esperar(page, 300)
+
+    log("   Haciendo click en Confirmar...")
     await page.click("#BUTTON1")
-    await page.wait_for_load_state("networkidle")
 
-    if "wv0527" not in page.url and "alumnos" in page.url:
-        raise Exception("❌ Login fallido — verifica usuario/contraseña")
+    # Esperar navegación — GeneXus puede ser lento
+    try:
+        await page.wait_for_url("**/wv0527**", timeout=15000)
+        log("✅ Login exitoso — redirigido a wv0527")
+        return
+    except PlaywrightTimeout:
+        pass
 
-    log("✅ Login exitoso")
+    # Si no hubo redirect, ver qué pasó
+    url_actual = page.url
+    log(f"   URL tras login: {url_actual}")
+
+    # Buscar mensaje de error en la página
+    contenido = await page.content()
+    errores_posibles = ["incorrecta", "inválid", "no existe", "error", "incorrecto"]
+    for err in errores_posibles:
+        if err.lower() in contenido.lower():
+            log(f"   Mensaje de error detectado en página (contiene: '{err}')")
+            break
+
+    await page.screenshot(path="error_screenshot.png")
+
+    if "wv0527" not in url_actual:
+        raise Exception(
+            f"❌ Login fallido — URL actual: {url_actual}. "
+            "Verifica usuario/contraseña en los Repository secrets."
+        )
 
 
 async def seleccionar_plan(page):
