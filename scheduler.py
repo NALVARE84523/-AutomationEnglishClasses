@@ -69,6 +69,12 @@ def calcular_clases_a_agendar():
         log("   El día objetivo es fin de semana — no se agenda.")
         return [], None
 
+    # Verificar que estamos dentro del horario permitido (6am - 10pm Colombia)
+    hora_actual = ahora.hour + ahora.minute / 60
+    if hora_actual < 6.0 or hora_actual >= 22.0:
+        log(f"   ⚠️  Fuera del horario permitido ({ahora.strftime('%H:%M')}). Sistema disponible 6:00am–10:00pm.")
+        return [], None
+
     return horas, fecha_objetivo
 
 
@@ -414,13 +420,6 @@ async def main():
     if not horas:
         log("✅ No hay clases que agendar hoy. Fin.")
         return
-
-    # Verificar que estamos dentro del horario permitido (6am - 10pm Colombia)
-    hora_actual = ahora.hour + ahora.minute / 60
-    if hora_actual < 6.0 or hora_actual >= 22.0:
-        log(f"   ⚠️  Fuera del horario permitido ({ahora.strftime('%H:%M')}). El sistema solo opera entre 6:00am y 10:00pm.")
-        log("   El workflow de GitHub corre a las 6:10am — si ves este mensaje, revisa el cron.")
-        return [], None
 
     log(f"   Clases a agendar: {[h['label'] for h in horas]} para el {fecha_objetivo.strftime('%d/%m/%Y')}")
 
