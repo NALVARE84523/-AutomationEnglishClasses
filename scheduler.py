@@ -1,11 +1,16 @@
 """
 Smart Idiomas - Agendador automático de clases
+Horario:
+  Lunes, Miércoles, Viernes -> 1 clase a las 18:00 en San Martin
+  Martes, Jueves            -> 2 clases: 18:00 y 19:30 en Santafe
+  Sábado                    -> no ejecutar
+  Domingo                   -> agenda clase del Lunes siguiente
 """
 
 import asyncio
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -18,9 +23,54 @@ USUARIO  = os.environ["SMART_USUARIO"]
 PASSWORD = os.environ["SMART_PASSWORD"]
 PLAN_COD = os.environ.get("SMART_PLAN", "INGA1B2")
 
-HORAS = ["18:00", "19:30"]
-
 ZONA_COL = pytz.timezone("America/Bogota")
+
+# ─── Lógica de horario ────────────────────────────────────────────────────────
+
+def calcular_clases_a_agendar():
+    """
+    Determina qué clases agendar basado en el día actual (Colombia).
+    Retorna (horas_a_agendar, fecha_objetivo) o ([], None) si no hay nada que hacer.
+    
+    El programa corre a las 6:10am y agenda para el día siguiente,
+    excepto el domingo que agenda para el lunes.
+    """
+    ahora = datetime.now(ZONA_COL)
+    dia_semana = ahora.weekday()  # 0=Lun, 1=Mar, 2=Mie, 3=Jue, 4=Vie, 5=Sab, 6=Dom
+
+    nombres = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+    log(f"   Hoy es {nombres[dia_semana]}")
+
+    # Sábado: no ejecutar
+    if dia_semana == 5:
+        log("   Es sábado — no se agenda nada.")
+        return [], None
+
+    # Calcular el día objetivo (mañana, salvo domingo que apunta al lunes)
+    if dia_semana == 6:  # Domingo -> Lunes
+        dias_adelante = 1
+    else:
+        dias_adelante = 1
+
+    fecha_objetivo = ahora + timedelta(days=dias_adelante)
+    dia_objetivo = fecha_objetivo.weekday()
+
+    log(f"   Agendando para: {nombres[dia_objetivo]} {fecha_objetivo.strftime('%d/%m/%Y')}")
+
+    # Definir clases según el día objetivo
+    if dia_objetivo in [0, 2, 4]:  # Lun, Mie, Vie
+        horas = [{"label": "18:00", "sede": "SAN MARTIN"}]
+    elif dia_objetivo in [1, 3]:   # Mar, Jue
+        horas = [
+            {"label": "18:00",  "sede": "SANTAFE"},
+            {"label": "19:30",  "sede": "SANTAFE"},
+        ]
+    else:  # Sábado o Domingo objetivo (no debería ocurrir)
+        log("   El día objetivo es fin de semana — no se agenda.")
+        return [], None
+
+    return horas, fecha_objetivo
+
 
 def log(msg):
     print(f"[{datetime.now(ZONA_COL).strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -66,14 +116,13 @@ async def hacer_login(page):
             try:
                 btn = page.locator(selector).first
                 if await btn.count() > 0:
-                    log(f"   Modal en página — cerrando con {selector}...")
+                    log(f"   Modal — cerrando con {selector}...")
                     await btn.click()
                     await esperar(2000)
                     break
             except:
                 continue
 
-    # Esperar URL destino (sin networkidle — la plataforma tiene polling)
     for _ in range(20):
         if "wv0480" in page.url or "wv0527" in page.url:
             break
@@ -101,7 +150,6 @@ async def ir_a_programacion(page):
     except PlaywrightTimeout:
         pass
     await page.goto(PLANES_URL, wait_until="load")
-    log(f"   URL: {page.url}")
 
 
 # ─── Seleccionar plan y abrir iframe de clases ────────────────────────────────
@@ -123,100 +171,197 @@ async def seleccionar_plan(page):
     await page.locator("#W0030BUTTON1").click()
     await esperar(2000)
 
-    # wv0613 carga dentro de un IFRAME — esperar que aparezca
     log("   Esperando iframe wv0613...")
     try:
         await page.wait_for_selector("iframe[src*='wv0613']", timeout=20000)
     except PlaywrightTimeout:
         await screenshot(page, "error_sin_iframe.png")
-        raise Exception("Iframe wv0613 no apareció tras click en Iniciar")
+        raise Exception("Iframe wv0613 no apareció")
 
-    # Obtener el frame usando frame_locator (API correcta de Playwright)
     frame = page.frame_locator("iframe[src*='wv0613']")
-
-    # Esperar que el iframe cargue el botón Asignar
     log("   Esperando contenido del iframe...")
     await frame.locator("#BUTTON1[value='Asignar']").wait_for(timeout=15000)
     log("✅ Iframe de clases listo")
 
 
-# ─── Filtrar y encontrar primera clase pendiente ───────────────────────────────
+# ─── Verificar si ya hay clase programada para mañana ────────────────────────
+
+async def clases_ya_programadas(page, fecha_objetivo, horas):
+    """
+    Revisa si ya hay clases en estado 'Programada' para la fecha objetivo.
+    Retorna True si TODAS las clases ya están programadas (nada que hacer).
+    """
+    log(f"🔎 Verificando clases ya programadas para {fecha_objetivo.strftime('%d/%m/%Y')}...")
+
+    wv0613 = await get_wv0613_frame(page)
+    if not wv0613:
+        return False
+
+    # Filtrar por "Programadas" (value=3)
+    await wv0613.select_option("#vTPEAPROBO", "3")
+    await esperar(2000)
+
+    fecha_str = fecha_objetivo.strftime("%-d/%-m/%y")   # ej: "8/5/26"
+    fecha_str2 = fecha_objetivo.strftime("%d/%m/%y")    # ej: "08/05/26"
+
+    html = await wv0613.content()
+    horas_encontradas = []
+    for h in horas:
+        hora_label = h["label"]
+        if hora_label in html and (fecha_str in html or fecha_str2 in html):
+            horas_encontradas.append(hora_label)
+            log(f"   ✅ Clase {hora_label} ya programada para mañana")
+
+    # Volver al filtro "Todos los estados"
+    await wv0613.select_option("#vTPEAPROBO", "0")
+    await esperar(1000)
+
+    if len(horas_encontradas) == len(horas):
+        log("   Todas las clases ya están programadas — nada que hacer.")
+        return True
+
+    log(f"   Clases pendientes de agendar: {[h['label'] for h in horas if h['label'] not in horas_encontradas]}")
+    return False
+
+
+# ─── Frame helpers ────────────────────────────────────────────────────────────
 
 async def get_wv0613_frame(page):
-    """Obtiene el Frame real de wv0613 desde page.frames."""
     for f in page.frames:
         if "wv0613" in f.url:
             return f
     return None
 
 
-async def encontrar_primera_clase_pendiente(page):
-    log("🔍 Filtrando por 'Pendientes por programar'...")
-
-    wv0613 = await get_wv0613_frame(page)
-    if not wv0613:
-        raise Exception("Frame wv0613 no encontrado")
-
-    # Seleccionar filtro "Pendientes por programar" (value=2)
-    await wv0613.select_option("#vTPEAPROBO", "2")
-    await esperar(2000)
-
-    # Buscar la primera fila visible
-    log("   Buscando primera clase pendiente...")
-    filas = wv0613.locator("tr[id^='Grid1ContainerRow_']")
-    cnt = await filas.count()
-    if cnt == 0:
-        raise Exception("No hay clases pendientes por programar")
-
-    primera_fila = filas.first
-    texto = await primera_fila.text_content()
-    log(f"   Clase: {texto[:80].strip()}")
-    return primera_fila, wv0613
-
-
-# ─── Hacer click en Asignar para abrir modal de día/hora ──────────────────────
-
 async def cerrar_modal_614(page):
-    """Cierra el iframe/popup de wv0614a si está abierto, para liberar el overlay."""
+    """Cierra el popup wv0614a si está abierto."""
     for f in page.frames:
         if "wv0614" in f.url:
             log("   Cerrando modal wv0614a...")
-            # Intentar click en Regresar dentro del frame
             try:
-                btn = await f.query_selector("#BUTTON2, input[value='Regresar'], input[value='Cancelar']")
+                btn = await f.query_selector("input[value='Regresar'], input[value='Cancelar'], #BUTTON2")
                 if btn:
                     await btn.click()
                     await esperar(1000)
                     return
             except:
                 pass
-            # Buscar el botón X del popup en la página principal
             try:
-                x_btn = page.locator(".gx-popup-close, img[src*='exitIcon'], [id*='gxp'][id$='_x']").first
+                x_btn = page.locator(".gx-popup-close, [id*='gxp'][id$='_x']").first
                 if await x_btn.count() > 0:
                     await x_btn.click()
                     await esperar(1000)
                     return
             except:
                 pass
-            # Último recurso: ocultar el popup via JS
             try:
-                await page.evaluate("""
-                    () => {
-                        const popups = document.querySelectorAll('.gx-popup');
-                        popups.forEach(p => p.style.display = 'none');
-                    }
-                """)
+                await page.evaluate("() => { document.querySelectorAll('.gx-popup').forEach(p => p.style.display='none'); }")
                 await esperar(500)
             except:
                 pass
-            log("   Modal cerrada")
             return
 
 
-async def abrir_modal_dia_hora(page):
-    """Hace click en la primera fila pendiente y luego en el botón Asignar."""
-    # Primero asegurarse de que no haya un popup wv0614a bloqueando
+# ─── Buscar y agendar clase ───────────────────────────────────────────────────
+
+async def encontrar_primera_clase_pendiente(page):
+    log("🔍 Filtrando por 'Pendientes por programar'...")
+    wv0613 = await get_wv0613_frame(page)
+    if not wv0613:
+        raise Exception("Frame wv0613 no encontrado")
+
+    await wv0613.select_option("#vTPEAPROBO", "2")
+    await esperar(2000)
+
+    filas = wv0613.locator("tr[id^='Grid1ContainerRow_']")
+    if await filas.count() == 0:
+        raise Exception("No hay clases pendientes por programar")
+
+    primera = filas.first
+    texto = await primera.text_content()
+    log(f"   Clase: {texto[:80].strip()}")
+    return primera, wv0613
+
+
+async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
+    log(f"   Configurando {label_hora}...")
+
+    # Buscar frame de wv0614a
+    dia_frame = None
+    await esperar(2000)
+    for f in page.frames:
+        if "wv0614" in f.url:
+            dia_frame = f
+            log(f"   Frame wv0614a encontrado")
+            break
+
+    if not dia_frame:
+        # Buscar en cualquier frame que tenga #vDIA
+        for f in page.frames:
+            try:
+                el = await f.query_selector("#vDIA")
+                if el:
+                    dia_frame = f
+                    break
+            except:
+                continue
+
+    if not dia_frame:
+        raise Exception("No se encontró #vDIA en ningún frame")
+
+    await dia_frame.wait_for_selector("#vDIA", timeout=10000)
+    await esperar(500)
+
+    opciones = await dia_frame.eval_on_selector(
+        "#vDIA",
+        "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
+    )
+    log(f"   Días disponibles: {[o['text'] for o in opciones]}")
+
+    # Seleccionar la opción que corresponde a la fecha objetivo
+    fecha_buscada = fecha_objetivo.strftime("%d/%m/%y").lstrip("0").replace("/0", "/")
+    valor_elegido = None
+    for op in opciones:
+        if fecha_objetivo.strftime("%d/%m") in op["text"] or fecha_buscada in op["text"]:
+            valor_elegido = op["value"]
+            log(f"   Día elegido: {op['text']}")
+            break
+
+    if not valor_elegido:
+        # Tomar el último (mañana)
+        valor_elegido = opciones[-1]["value"]
+        log(f"   Día (último disponible): {opciones[-1]['text']}")
+
+    await dia_frame.select_option("#vDIA", valor_elegido)
+    await esperar(1500)
+
+    # Click en la fila de la hora
+    fila_hora = dia_frame.locator("tr").filter(has_text=label_hora).first
+    if await fila_hora.count() > 0:
+        await fila_hora.click()
+    else:
+        celda = dia_frame.locator(f"td:has-text('{label_hora}')").first
+        if await celda.count() > 0:
+            await celda.click()
+        else:
+            raise Exception(f"Hora {label_hora} no encontrada en la tabla")
+
+    await esperar(600)
+    log(f"   Hora {label_hora} seleccionada — confirmando...")
+    await dia_frame.click("#BUTTON1")
+    await esperar(1500)
+    log(f"   ✅ {label_hora} confirmada")
+
+    # Cerrar el popup para que no bloquee la siguiente clase
+    await cerrar_modal_614(page)
+    await esperar(500)
+
+
+async def agendar_clase(page, hora_config, fecha_objetivo):
+    label = hora_config["label"]
+    log(f"\n━━━ Agendando {label} ━━━")
+
+    # Asegurarse de que no haya popup bloqueando
     await cerrar_modal_614(page)
 
     primera_fila, wv0613 = await encontrar_primera_clase_pendiente(page)
@@ -229,97 +374,23 @@ async def abrir_modal_dia_hora(page):
     await wv0613.locator("#BUTTON1[value='Asignar']").click()
     await esperar(2000)
 
-
-# ─── Seleccionar día y hora en la modal de wv0614a ────────────────────────────
-
-async def seleccionar_dia_y_hora(page, frame, label_hora):
-    log(f"   Configurando {label_hora}...")
-
-    # La modal de día/hora (wv0614a) puede abrirse como otro iframe o popup
-    # Esperar que aparezca el select #vDIA
-    # Primero buscar en un nuevo iframe dentro del frame actual
-    dia_frame = frame  # por defecto, buscar en el mismo frame
-
-    # Verificar si hay un iframe anidado para wv0614a
-    # wv0614a puede abrirse en: iframe anidado dentro de wv0613, o frame en página principal
-    dia_frame = None
-
-    # Buscar en frames reales de la página (page.frames incluye todos los iframes)
-    await esperar(2000)
-    for f in page.frames:
-        if "wv0614" in f.url:
-            dia_frame = f
-            log(f"   Modal día/hora en frame: {f.url}")
-            break
-
-    # Si no hay frame wv0614, buscar en el mismo iframe wv0613
-    if not dia_frame:
-        try:
-            await frame.locator("#vDIA").wait_for(timeout=5000)
-            # frame_locator no tiene eval — usar page.frames para encontrarlo
-            for f in page.frames:
-                if "wv0613" in f.url:
-                    dia_frame = f
-                    break
-        except PlaywrightTimeout:
-            pass
-
-    # Último recurso: buscar en cualquier frame que tenga #vDIA
-    if not dia_frame:
-        for f in page.frames:
-            try:
-                el = await f.query_selector("#vDIA")
-                if el:
-                    dia_frame = f
-                    log(f"   #vDIA encontrado en frame: {f.url}")
-                    break
-            except:
-                continue
-
-    if not dia_frame:
-        raise Exception("No se encontró el selector #vDIA en ningún frame")
-
-    await dia_frame.wait_for_selector("#vDIA", timeout=10000)
-    await esperar(500)
-
-    opciones = await dia_frame.eval_on_selector(
-        "#vDIA",
-        "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
-    )
-    log(f"   Días: {[o['text'] for o in opciones]}")
-
-    if len(opciones) < 2:
-        raise Exception("No hay día disponible para mañana")
-
-    await dia_frame.select_option("#vDIA", opciones[-1]["value"])
-    await esperar(1500)
-    log(f"   Día: {opciones[-1]['text']}")
-
-    # Click en la fila de la hora
-    fila_hora = dia_frame.locator("tr").filter(has_text=label_hora).first
-    if await fila_hora.count() > 0:
-        await fila_hora.click()
-    else:
-        celda = dia_frame.locator(f"td:has-text('{label_hora}')").first
-        if await celda.count() > 0:
-            await celda.click()
-        else:
-            raise Exception(f"Hora {label_hora} no encontrada")
-
-    await esperar(600)
-    log(f"   Hora {label_hora} seleccionada — confirmando...")
-    await dia_frame.click("#BUTTON1")
-    await esperar(1500)
-    log(f"   ✅ {label_hora} confirmada")
-    # Cerrar el popup wv0614a para liberar el overlay
-    await cerrar_modal_614(page)
-    await esperar(500)
+    await seleccionar_dia_y_hora(page, label, fecha_objetivo)
+    log(f"🎉 {label} agendada")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main():
     log(f"🚀 {datetime.now(ZONA_COL).strftime('%A %d/%m/%Y %H:%M')} Colombia")
+
+    # Determinar qué hay que agendar hoy
+    horas, fecha_objetivo = calcular_clases_a_agendar()
+
+    if not horas:
+        log("✅ No hay clases que agendar hoy. Fin.")
+        return
+
+    log(f"   Clases a agendar: {[h['label'] for h in horas]} para el {fecha_objetivo.strftime('%d/%m/%Y')}")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -336,28 +407,26 @@ async def main():
             await ir_a_programacion(page)
             await seleccionar_plan(page)
 
+            # Verificar si las clases ya están programadas
+            if await clases_ya_programadas(page, fecha_objetivo, horas):
+                log("✅ Nada que hacer — clases ya programadas.")
+                return
+
             errores = []
-            for label_hora in HORAS:
+            for hora_config in horas:
                 try:
-                    log(f"\n━━━ Agendando {label_hora} ━━━")
-                    await abrir_modal_dia_hora(page)
-                    await seleccionar_dia_y_hora(page, None, label_hora)
-                    log(f"🎉 {label_hora} agendada")
-                    # Volver al iframe para la siguiente clase
-                    await esperar(1000)
-                    # Re-obtener el frame por si se recargó
-                    pass  # frame se re-obtiene dinámicamente en cada llamada
+                    await agendar_clase(page, hora_config, fecha_objetivo)
                 except Exception as e:
-                    log(f"⚠️  Error {label_hora}: {e}")
-                    errores.append(f"{label_hora}: {e}")
-                    await screenshot(page, f"error_{label_hora.replace(':','')}.png")
+                    log(f"⚠️  Error {hora_config['label']}: {e}")
+                    errores.append(f"{hora_config['label']}: {e}")
+                    await screenshot(page, f"error_{hora_config['label'].replace(':','')}.png")
 
             if errores:
                 for err in errores:
                     log(f"   ❌ {err}")
                 sys.exit(1)
             else:
-                log("✅ Todas las clases agendadas")
+                log("✅ Todas las clases agendadas correctamente")
 
         except Exception as e:
             log(f"❌ Fatal: {e}")
