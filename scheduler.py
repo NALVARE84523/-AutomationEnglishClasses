@@ -286,14 +286,19 @@ async def encontrar_primera_clase_pendiente(page):
 async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
     log(f"   Configurando {label_hora}...")
 
-    # Buscar frame de wv0614a
+    # Esperar a que aparezca el iframe wv0614a (puede tardar)
     dia_frame = None
-    await esperar(2000)
-    for f in page.frames:
-        if "wv0614" in f.url:
-            dia_frame = f
-            log(f"   Frame wv0614a encontrado")
+    for intento in range(15):  # hasta 15 segundos
+        frames_actuales = page.frames
+        log(f"   [{intento+1}] Frames activos: {[f.url[:60] for f in frames_actuales]}")
+        for f in frames_actuales:
+            if "wv0614" in f.url:
+                dia_frame = f
+                log(f"   Frame wv0614a encontrado en intento {intento+1}")
+                break
+        if dia_frame:
             break
+        await esperar(1000)
 
     if not dia_frame:
         # Buscar en cualquier frame que tenga #vDIA
@@ -302,11 +307,13 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
                 el = await f.query_selector("#vDIA")
                 if el:
                     dia_frame = f
+                    log(f"   #vDIA encontrado en frame: {f.url[:60]}")
                     break
             except:
                 continue
 
     if not dia_frame:
+        await screenshot(page, f"error_vdia_{label_hora.replace(':','')}.png")
         raise Exception("No se encontró #vDIA en ningún frame")
 
     await dia_frame.wait_for_selector("#vDIA", timeout=10000)
