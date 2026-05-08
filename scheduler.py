@@ -312,6 +312,24 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
             except:
                 continue
 
+    # Verificar si apareció la modal de error wv0232 (fuera de horario)
+    for f in page.frames:
+        if "wv0232" in f.url:
+            try:
+                msg = await f.query_selector("#vMENSAJE, span#span_vMENSAJE")
+                if msg:
+                    texto_error = await msg.text_content()
+                    # Cerrar la modal
+                    btn_aceptar = await f.query_selector("#BUTTON1")
+                    if btn_aceptar:
+                        await btn_aceptar.click()
+                        await esperar(1000)
+                    raise Exception(f"Sistema no disponible: {texto_error[:100].strip()}")
+            except Exception as e:
+                if "Sistema no disponible" in str(e):
+                    raise
+                pass
+
     if not dia_frame:
         await screenshot(page, f"error_vdia_{label_hora.replace(':','')}.png")
         raise Exception("No se encontró #vDIA en ningún frame")
@@ -396,6 +414,13 @@ async def main():
     if not horas:
         log("✅ No hay clases que agendar hoy. Fin.")
         return
+
+    # Verificar que estamos dentro del horario permitido (6am - 10pm Colombia)
+    hora_actual = ahora.hour + ahora.minute / 60
+    if hora_actual < 6.0 or hora_actual >= 22.0:
+        log(f"   ⚠️  Fuera del horario permitido ({ahora.strftime('%H:%M')}). El sistema solo opera entre 6:00am y 10:00pm.")
+        log("   El workflow de GitHub corre a las 6:10am — si ves este mensaje, revisa el cron.")
+        return [], None
 
     log(f"   Clases a agendar: {[h['label'] for h in horas]} para el {fecha_objetivo.strftime('%d/%m/%Y')}")
 
