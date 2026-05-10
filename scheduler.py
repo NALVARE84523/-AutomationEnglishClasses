@@ -372,24 +372,32 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
                 if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
                     gx.evt.onchange(selDia, {{}});
                 }}
-                await new Promise(r => setTimeout(r, 2000));
+                // Esperar que GeneXus recargue la grilla de horarios
+                await new Promise(r => setTimeout(r, 3500));
             }}
 
-            // 3. Seleccionar la fila de la hora en la grilla
-            const fila = document.querySelector('#Grid1ContainerRow_{fila_id}');
-            if (fila) {{
-                fila.click();
-                await new Promise(r => setTimeout(r, 500));
-            }} else {{
+            // 3. Seleccionar la fila de la hora — reintentar hasta 5 veces
+            let filaEncontrada = false;
+            for (let intento = 0; intento < 5; intento++) {{
+                const fila = document.querySelector('#Grid1ContainerRow_{fila_id}');
+                if (fila) {{
+                    fila.click();
+                    await new Promise(r => setTimeout(r, 500));
+                    filaEncontrada = true;
+                    break;
+                }}
                 // Buscar por texto de hora
                 const celdas = document.querySelectorAll('span[id^="span_HORSEDHIN_"]');
                 for (const celda of celdas) {{
                     if (celda.textContent.trim() === '{label_hora}') {{
                         celda.closest('tr').click();
                         await new Promise(r => setTimeout(r, 500));
+                        filaEncontrada = true;
                         break;
                     }}
                 }}
+                if (filaEncontrada) break;
+                await new Promise(r => setTimeout(r, 1000));
             }}
 
             // 4. Verificar fila seleccionada
@@ -435,7 +443,7 @@ async def agendar_clase(page, hora_config, fecha_objetivo):
     await wv0613.locator("#BUTTON1[value='Asignar']").click()
     await esperar(2000)
 
-    await seleccionar_dia_y_hora(page, label, fecha_objetivo)
+    await seleccionar_dia_y_hora(page, label, fecha_objetivo, hora_config)
     log(f"🎉 {label} agendada")
 
 
