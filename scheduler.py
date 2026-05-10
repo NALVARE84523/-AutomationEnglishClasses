@@ -353,67 +353,72 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
     fila_id = hora_fila_map.get(label_hora, "0009")
     log(f"   Fila de hora: {fila_id}")
 
-    # Usar JavaScript para: 1) cambiar sede, 2) cambiar día, 3) seleccionar fila, 4) submit
-    resultado = await dia_frame.evaluate(f"""
-        async () => {{
-            // 1. Cambiar sede y esperar recarga
-            const selSede = document.querySelector('#vREGCONREG');
-            if (selSede && selSede.value !== '{valor_sede}') {{
-                selSede.value = '{valor_sede}';
-                selSede.dispatchEvent(new Event('change', {{bubbles: true}}));
-                if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
-                    gx.evt.onchange(selSede, {{}});
-                }}
-                await new Promise(r => setTimeout(r, 3000));
-            }}
+    # Cambiar sede via Playwright (más confiable que JS puro para GeneXus)
+    sede_actual = await dia_frame.eval_on_selector("#vREGCONREG", "s => s.value")
+    if sede_actual != valor_sede:
+        log(f"   Cambiando sede {sede_actual} -> {valor_sede}...")
+        await dia_frame.select_option("#vREGCONREG", valor_sede)
+        # Disparar el onblur que GeneXus usa para procesar el cambio
+        await dia_frame.evaluate("() => { const s = document.querySelector('#vREGCONREG'); s.blur(); }")
+        await dia_frame.evaluate("() => { if(typeof gx!='undefined') gx.evt.onchange(document.querySelector('#vREGCONREG'), {}); }")
+        await esperar(3000)
 
-            // 2. Cambiar día y esperar recarga de grilla
-            const selDia = document.querySelector('#vDIA');
-            if (selDia) {{
-                selDia.value = '{valor_dia}';
-                selDia.dispatchEvent(new Event('change', {{bubbles: true}}));
-                if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
-                    gx.evt.onchange(selDia, {{}});
-                }}
-                await new Promise(r => setTimeout(r, 3000));
-            }}
+    # Cambiar día via Playwright
+    dia_actual = await dia_frame.eval_on_selector("#vDIA", "s => s.value")
+    if dia_actual != valor_dia:
+        log(f"   Cambiando día {dia_actual} -> {valor_dia}...")
+        await dia_frame.select_option("#vDIA", valor_dia)
+        await dia_frame.evaluate("() => { const s = document.querySelector('#vDIA'); s.blur(); }")
+        await dia_frame.evaluate("() => { if(typeof gx!='undefined') gx.evt.onchange(document.querySelector('#vDIA'), {}); }")
+        await esperar(3000)
 
-            // 3. Seleccionar la fila por texto de hora (más robusto que por ID)
-            // Los IDs pueden cambiar según la sede/día
-            let filaEncontrada = false;
-            for (let intento = 0; intento < 8; intento++) {{
-                // Buscar SIEMPRE por texto de hora (no por ID fijo)
-                const celdas = document.querySelectorAll('span[id^="span_HORSEDHIN_"]');
-                for (const celda of celdas) {{
-                    if (celda.textContent.trim() === '{label_hora}') {{
-                        const fila = celda.closest('tr');
-                        fila.click();
-                        await new Promise(r => setTimeout(r, 600));
-                        filaEncontrada = true;
-                        break;
-                    }}
-                }}
-                if (filaEncontrada) break;
-                await new Promise(r => setTimeout(r, 1000));
-            }}
+    # Verificar valores actuales
+    dia_final = await dia_frame.eval_on_selector("#vDIA", "s => s.value")
+    sede_final = await dia_frame.eval_on_selector("#vREGCONREG", "s => s.value")
+    log(f"   Valores tras cambios — día={dia_final}, sede={sede_final}")
 
-            // 4. Verificar fila seleccionada y listar horas disponibles
-            const seleccionada = document.querySelector('tr[data-gxselected]');
-            const horaSelec = seleccionada ?
-                seleccionada.querySelector('span[id^="span_HORSEDHIN_"]')?.textContent?.trim() : 'ninguna';
+    # Seleccionar la fila de la hora buscando por texto
+    horas_disponibles = await dia_frame.eval_on_selector_all(
+        "span[id^='span_HORSEDHIN_']",
+        "spans => spans.map(s => s.textContent.trim())"
+    )
+    log(f"   Horas en grilla: {horas_disponibles}")
 
-            // Listar todas las horas disponibles en la grilla actual
-            const todasHoras = Array.from(document.querySelectorAll('span[id^="span_HORSEDHIN_"]'))
-                .map(s => s.textContent.trim());
+    fila_encontrada = False
+    for intento in range(5):
+        filas = dia_frame.locator("tr[data-gxrow]")
+        count = await filas.count()
+        for i in range(count):
+            fila = filas.nth(i)
+            hora_celda = fila.locator("span[id^='span_HORSEDHIN_']").first
+            if await hora_celda.count() > 0:
+                texto = (await hora_celda.text_content()).strip()
+                if texto == label_hora:
+                    log(f"   Haciendo click en fila con hora {texto}...")
+                    await fila.click()
+                    await esperar(600)
+                    fila_encontrada = True
+                    break
+        if fila_encontrada:
+            break
+        log(f"   Intento {intento+1}: hora {label_hora} no encontrada, reintentando...")
+        await esperar(1000)
 
-            return {{
-                dia: selDia ? selDia.value : 'no encontrado',
-                sede: selSede ? selSede.value : 'no encontrado',
-                horaSeleccionada: horaSelec,
-                horasDisponibles: todasHoras
-            }};
-        }}
-    """)
+    # Verificar selección
+    sel = await dia_frame.query_selector("tr[data-gxselected]")
+    if sel:
+        hora_sel = await sel.query_selector("span[id^='span_HORSEDHIN_']")
+        txt = (await hora_sel.text_content()).strip() if hora_sel else "?"
+        log(f"   Fila seleccionada: {txt}")
+    else:
+        log("   ⚠️  Ninguna fila quedó seleccionada")
+
+    resultado = {
+        "dia": dia_final,
+        "sede": sede_final,
+        "horaSeleccionada": txt if sel else "ninguna",
+        "horasDisponibles": horas_disponibles
+    }
 
     log(f"   Estado JS — día={resultado['dia']}, sede={resultado['sede']}, hora={resultado['horaSeleccionada']}")
     log(f"   Horas disponibles en grilla: {resultado.get('horasDisponibles', [])}")
