@@ -289,7 +289,7 @@ async def encontrar_primera_clase_pendiente(page):
     return primera, wv0613
 
 
-async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
+async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=None):
     log(f"   Configurando {label_hora}...")
 
     # Esperar a que aparezca el iframe wv0614a (puede tardar)
@@ -343,33 +343,63 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
     await dia_frame.wait_for_selector("#vDIA", timeout=10000)
     await esperar(500)
 
+    # 1. Seleccionar la sede correcta
+    sede_values = {"SAN MARTIN": "17", "SANTAFE": "32"}
+    hora_config = hora_config or {}
+    sede_nombre = hora_config.get("sede", "")
+    sede_value = sede_values.get(sede_nombre)
+    if sede_value:
+        sede_actual = await dia_frame.eval_on_selector("#vREGCONREG", "sel => sel.value")
+        if sede_actual != sede_value:
+            log(f"   Cambiando sede a {sede_nombre} (value={sede_value})...")
+            await dia_frame.focus("#vREGCONREG")
+            await dia_frame.select_option("#vREGCONREG", sede_value)
+            await dia_frame.evaluate("""() => {
+                const sel = document.querySelector('#vREGCONREG');
+                sel.dispatchEvent(new Event('change', {bubbles:true}));
+            }""")
+            await esperar(2000)
+            log(f"   Sede cambiada")
+
+    # 2. Seleccionar el día correcto y disparar el evento de GeneXus
     opciones = await dia_frame.eval_on_selector(
         "#vDIA",
         "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
     )
     log(f"   Días disponibles: {[o['text'] for o in opciones]}")
 
-    # Seleccionar la opción que corresponde a la fecha objetivo
     fecha_buscada = fecha_objetivo.strftime("%d/%m/%y").lstrip("0").replace("/0", "/")
     valor_elegido = None
     for op in opciones:
         if fecha_objetivo.strftime("%d/%m") in op["text"] or fecha_buscada in op["text"]:
             valor_elegido = op["value"]
-            log(f"   Día elegido: {op['text']}")
+            log(f"   Día elegido: {op['text']} (value={valor_elegido})")
             break
 
     if not valor_elegido:
-        # Tomar el último (mañana)
         valor_elegido = opciones[-1]["value"]
-        log(f"   Día (último disponible): {opciones[-1]['text']}")
+        log(f"   Día (último): {opciones[-1]['text']} (value={valor_elegido})")
 
+    # Seleccionar y disparar onchange explícitamente para que GeneXus procese el cambio
+    await dia_frame.focus("#vDIA")
     await dia_frame.select_option("#vDIA", valor_elegido)
-    await esperar(1500)
+    await dia_frame.evaluate(f"""() => {{
+        const sel = document.querySelector('#vDIA');
+        sel.value = '{valor_elegido}';
+        sel.dispatchEvent(new Event('change', {{bubbles:true}}));
+        if (typeof gx !== 'undefined') gx.evt.onchange(sel, {{}});
+    }}""")
+    await esperar(2000)
 
-    # Click en la fila de la hora
+    # 3. Click en la fila de la hora
     fila_hora = dia_frame.locator("tr").filter(has_text=label_hora).first
     if await fila_hora.count() > 0:
         await fila_hora.click()
+        await esperar(400)
+        sel_check = await dia_frame.query_selector("tr[data-gxselected]")
+        if sel_check:
+            txt = await sel_check.text_content()
+            log(f"   Fila seleccionada: {txt[:50].strip()}")
     else:
         celda = dia_frame.locator(f"td:has-text('{label_hora}')").first
         if await celda.count() > 0:
