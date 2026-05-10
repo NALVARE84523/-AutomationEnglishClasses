@@ -283,10 +283,18 @@ async def encontrar_primera_clase_pendiente(page):
     if await filas.count() == 0:
         raise Exception("No hay clases pendientes por programar")
 
-    primera = filas.first
-    texto = await primera.text_content()
-    log(f"   Clase: {texto[:80].strip()}")
-    return primera, wv0613
+    # Buscar la primera clase pendiente que NO sea SMART ZONE
+    count = await filas.count()
+    for i in range(count):
+        fila = filas.nth(i)
+        texto = await fila.text_content()
+        if "SMART ZONE" in texto.upper():
+            log(f"   Saltando SMART ZONE: {texto[:60].strip()}")
+            continue
+        log(f"   Clase encontrada: {texto[:80].strip()}")
+        return fila, wv0613
+
+    raise Exception("No hay clases pendientes por programar (todas son SMART ZONE)")
 
 
 async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=None):
