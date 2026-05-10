@@ -291,161 +291,129 @@ async def encontrar_primera_clase_pendiente(page):
 
 async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=None):
     log(f"   Configurando {label_hora}...")
+    hora_config = hora_config or {}
 
-    # Esperar a que aparezca el iframe wv0614a (puede tardar)
+    # Buscar el frame wv0614a
     dia_frame = None
-    for intento in range(15):  # hasta 15 segundos
-        frames_actuales = page.frames
-        log(f"   [{intento+1}] Frames activos: {[f.url[:60] for f in frames_actuales]}")
-        for f in frames_actuales:
+    for _ in range(15):
+        for f in page.frames:
             if "wv0614" in f.url:
                 dia_frame = f
-                log(f"   Frame wv0614a encontrado en intento {intento+1}")
                 break
         if dia_frame:
             break
         await esperar(1000)
 
     if not dia_frame:
-        # Buscar en cualquier frame que tenga #vDIA
         for f in page.frames:
             try:
-                el = await f.query_selector("#vDIA")
-                if el:
+                if await f.query_selector("#vDIA"):
                     dia_frame = f
-                    log(f"   #vDIA encontrado en frame: {f.url[:60]}")
                     break
             except:
                 continue
 
-    # Verificar si apareció la modal de error wv0232 (fuera de horario)
-    for f in page.frames:
-        if "wv0232" in f.url:
-            try:
-                msg = await f.query_selector("#vMENSAJE, span#span_vMENSAJE")
-                if msg:
-                    texto_error = await msg.text_content()
-                    # Cerrar la modal
-                    btn_aceptar = await f.query_selector("#BUTTON1")
-                    if btn_aceptar:
-                        await btn_aceptar.click()
-                        await esperar(1000)
-                    raise Exception(f"Sistema no disponible: {texto_error[:100].strip()}")
-            except Exception as e:
-                if "Sistema no disponible" in str(e):
-                    raise
-                pass
-
     if not dia_frame:
-        await screenshot(page, f"error_vdia_{label_hora.replace(':','')}.png")
-        raise Exception("No se encontró #vDIA en ningún frame")
+        raise Exception("No se encontró frame wv0614a")
 
     await dia_frame.wait_for_selector("#vDIA", timeout=10000)
-    await esperar(500)
+    await esperar(800)
 
-    # 1. Seleccionar la sede correcta
-    sede_values = {"SAN MARTIN": "17", "SANTAFE": "32"}
-    hora_config = hora_config or {}
-    sede_nombre = hora_config.get("sede", "")
-    sede_value = sede_values.get(sede_nombre)
-    if sede_value:
-        sede_actual = await dia_frame.eval_on_selector("#vREGCONREG", "sel => sel.value")
-        if sede_actual != sede_value:
-            log(f"   Cambiando sede a {sede_nombre} (value={sede_value})...")
-            await dia_frame.focus("#vREGCONREG")
-            await dia_frame.select_option("#vREGCONREG", sede_value)
-            await dia_frame.evaluate("""() => {
-                const sel = document.querySelector('#vREGCONREG');
-                sel.dispatchEvent(new Event('change', {bubbles:true}));
-            }""")
-            await esperar(2000)
-            log(f"   Sede cambiada")
-
-    # 2. Seleccionar el día correcto y disparar el evento de GeneXus
-    opciones = await dia_frame.eval_on_selector(
+    # Obtener opciones de día
+    opciones_dia = await dia_frame.eval_on_selector(
         "#vDIA",
         "sel => Array.from(sel.options).map(o => ({value: o.value, text: o.text}))"
     )
-    log(f"   Días disponibles: {[o['text'] for o in opciones]}")
+    log(f"   Días disponibles: {[o['text'] for o in opciones_dia]}")
 
-    fecha_buscada = fecha_objetivo.strftime("%d/%m/%y").lstrip("0").replace("/0", "/")
-    valor_elegido = None
-    for op in opciones:
-        if fecha_objetivo.strftime("%d/%m") in op["text"] or fecha_buscada in op["text"]:
-            valor_elegido = op["value"]
-            log(f"   Día elegido: {op['text']} (value={valor_elegido})")
+    # Buscar el valor del día objetivo
+    valor_dia = None
+    for op in opciones_dia:
+        if fecha_objetivo.strftime("%d/%m") in op["text"]:
+            valor_dia = op["value"]
+            log(f"   Día: {op['text']} (value={valor_dia})")
             break
+    if not valor_dia:
+        valor_dia = opciones_dia[-1]["value"]
+        log(f"   Día (último): {opciones_dia[-1]['text']} (value={valor_dia})")
 
-    if not valor_elegido:
-        valor_elegido = opciones[-1]["value"]
-        log(f"   Día (último): {opciones[-1]['text']} (value={valor_elegido})")
+    # Determinar la sede
+    sede_values = {"SAN MARTIN": "17", "SANTAFE": "32"}
+    sede_nombre = hora_config.get("sede", "SANTAFE")
+    valor_sede = sede_values.get(sede_nombre, "32")
+    log(f"   Sede: {sede_nombre} (value={valor_sede})")
 
-    # Seleccionar y disparar onchange explícitamente para que GeneXus procese el cambio
-    await dia_frame.focus("#vDIA")
-    await dia_frame.select_option("#vDIA", valor_elegido)
-    await dia_frame.evaluate(f"""() => {{
-        const sel = document.querySelector('#vDIA');
-        sel.value = '{valor_elegido}';
-        sel.dispatchEvent(new Event('change', {{bubbles:true}}));
-        if (typeof gx !== 'undefined') gx.evt.onchange(sel, {{}});
-    }}""")
-    await esperar(2000)
+    # Determinar la fila de la hora en la grilla
+    # Las filas tienen hora inicio en HORSEDHIN — buscar la que corresponde
+    hora_fila_map = {
+        "06:00": "0001", "07:30": "0002", "09:00": "0003",
+        "10:30": "0004", "12:00": "0005", "13:30": "0006",
+        "15:00": "0007", "16:30": "0008", "18:00": "0009", "19:30": "0010"
+    }
+    fila_id = hora_fila_map.get(label_hora, "0009")
+    log(f"   Fila de hora: {fila_id}")
 
-    # 3. Click en la fila de la hora
-    fila_hora = dia_frame.locator("tr").filter(has_text=label_hora).first
-    if await fila_hora.count() > 0:
-        await fila_hora.click()
-        await esperar(400)
-        sel_check = await dia_frame.query_selector("tr[data-gxselected]")
-        if sel_check:
-            txt = await sel_check.text_content()
-            log(f"   Fila seleccionada: {txt[:50].strip()}")
-    else:
-        celda = dia_frame.locator(f"td:has-text('{label_hora}')").first
-        if await celda.count() > 0:
-            await celda.click()
-        else:
-            raise Exception(f"Hora {label_hora} no encontrada en la tabla")
+    # Usar JavaScript para: 1) cambiar sede, 2) cambiar día, 3) seleccionar fila, 4) submit
+    resultado = await dia_frame.evaluate(f"""
+        async () => {{
+            // 1. Cambiar sede
+            const selSede = document.querySelector('#vREGCONREG');
+            if (selSede && selSede.value !== '{valor_sede}') {{
+                selSede.value = '{valor_sede}';
+                selSede.dispatchEvent(new Event('change', {{bubbles: true}}));
+                await new Promise(r => setTimeout(r, 1500));
+            }}
 
-    await esperar(600)
-    log(f"   Hora {label_hora} seleccionada — confirmando...")
+            // 2. Cambiar día y esperar recarga de grilla
+            const selDia = document.querySelector('#vDIA');
+            if (selDia) {{
+                selDia.value = '{valor_dia}';
+                selDia.dispatchEvent(new Event('change', {{bubbles: true}}));
+                if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
+                    gx.evt.onchange(selDia, {{}});
+                }}
+                await new Promise(r => setTimeout(r, 2000));
+            }}
 
-    # Screenshot antes de confirmar para ver el estado
-    try:
-        await dia_frame.screenshot(path=f"antes_confirmar_{label_hora.replace(':','')}.png")
-        log(f"   📸 antes_confirmar_{label_hora.replace(':','')}.png")
-    except:
-        pass
+            // 3. Seleccionar la fila de la hora en la grilla
+            const fila = document.querySelector('#Grid1ContainerRow_{fila_id}');
+            if (fila) {{
+                fila.click();
+                await new Promise(r => setTimeout(r, 500));
+            }} else {{
+                // Buscar por texto de hora
+                const celdas = document.querySelectorAll('span[id^="span_HORSEDHIN_"]');
+                for (const celda of celdas) {{
+                    if (celda.textContent.trim() === '{label_hora}') {{
+                        celda.closest('tr').click();
+                        await new Promise(r => setTimeout(r, 500));
+                        break;
+                    }}
+                }}
+            }}
 
-    # Log del HTML del frame para ver qué hay seleccionado
-    html_frame = await dia_frame.content()
-    import re
-    # Buscar aulas disponibles en la tabla
-    aulas = re.findall(r'<tr[^>]*data-gxrow[^>]*>.*?</tr>', html_frame, re.DOTALL)
-    log(f"   Filas en tabla de horarios: {len(aulas)}")
-    for a in aulas[:5]:
-        texto = re.sub(r'<[^>]+>', ' ', a).strip()
-        texto = ' '.join(texto.split())
-        log(f"     Fila: {texto[:120]}")
+            // 4. Verificar fila seleccionada
+            const seleccionada = document.querySelector('tr[data-gxselected]');
+            const horaSelec = seleccionada ?
+                seleccionada.querySelector('span[id^="span_HORSEDHIN_"]')?.textContent?.trim() : 'ninguna';
 
-    # Buscar el botón Confirmar
-    btn_confirmar = await dia_frame.query_selector("#BUTTON1")
-    btn_value = await btn_confirmar.get_attribute("value") if btn_confirmar else "NO ENCONTRADO"
-    log(f"   Botón #BUTTON1 value: {btn_value}")
+            return {{
+                dia: selDia ? selDia.value : 'no encontrado',
+                sede: selSede ? selSede.value : 'no encontrado',
+                horaSeleccionada: horaSelec
+            }};
+        }}
+    """)
 
+    log(f"   Estado JS — día={resultado['dia']}, sede={resultado['sede']}, hora={resultado['horaSeleccionada']}")
+    await esperar(500)
+
+    # Click en Confirmar
+    log(f"   Confirmando...")
     await dia_frame.click("#BUTTON1")
     await esperar(2000)
-
-    # Screenshot después de confirmar
-    try:
-        await page.screenshot(path=f"despues_confirmar_{label_hora.replace(':','')}.png", full_page=True)
-        log(f"   📸 despues_confirmar_{label_hora.replace(':','')}.png")
-    except:
-        pass
-
     log(f"   ✅ {label_hora} confirmada")
 
-    # Cerrar el popup para que no bloquee la siguiente clase
     await cerrar_modal_614(page)
     await esperar(500)
 
