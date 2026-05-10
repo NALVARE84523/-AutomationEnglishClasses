@@ -356,12 +356,15 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
     # Usar JavaScript para: 1) cambiar sede, 2) cambiar día, 3) seleccionar fila, 4) submit
     resultado = await dia_frame.evaluate(f"""
         async () => {{
-            // 1. Cambiar sede
+            // 1. Cambiar sede y esperar recarga
             const selSede = document.querySelector('#vREGCONREG');
             if (selSede && selSede.value !== '{valor_sede}') {{
                 selSede.value = '{valor_sede}';
                 selSede.dispatchEvent(new Event('change', {{bubbles: true}}));
-                await new Promise(r => setTimeout(r, 1500));
+                if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
+                    gx.evt.onchange(selSede, {{}});
+                }}
+                await new Promise(r => setTimeout(r, 3000));
             }}
 
             // 2. Cambiar día y esperar recarga de grilla
@@ -372,26 +375,20 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
                 if (typeof gx !== 'undefined' && gx.evt && gx.evt.onchange) {{
                     gx.evt.onchange(selDia, {{}});
                 }}
-                // Esperar que GeneXus recargue la grilla de horarios
-                await new Promise(r => setTimeout(r, 3500));
+                await new Promise(r => setTimeout(r, 3000));
             }}
 
-            // 3. Seleccionar la fila de la hora — reintentar hasta 5 veces
+            // 3. Seleccionar la fila por texto de hora (más robusto que por ID)
+            // Los IDs pueden cambiar según la sede/día
             let filaEncontrada = false;
-            for (let intento = 0; intento < 5; intento++) {{
-                const fila = document.querySelector('#Grid1ContainerRow_{fila_id}');
-                if (fila) {{
-                    fila.click();
-                    await new Promise(r => setTimeout(r, 500));
-                    filaEncontrada = true;
-                    break;
-                }}
-                // Buscar por texto de hora
+            for (let intento = 0; intento < 8; intento++) {{
+                // Buscar SIEMPRE por texto de hora (no por ID fijo)
                 const celdas = document.querySelectorAll('span[id^="span_HORSEDHIN_"]');
                 for (const celda of celdas) {{
                     if (celda.textContent.trim() === '{label_hora}') {{
-                        celda.closest('tr').click();
-                        await new Promise(r => setTimeout(r, 500));
+                        const fila = celda.closest('tr');
+                        fila.click();
+                        await new Promise(r => setTimeout(r, 600));
                         filaEncontrada = true;
                         break;
                     }}
