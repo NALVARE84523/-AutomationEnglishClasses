@@ -397,20 +397,26 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
                 await new Promise(r => setTimeout(r, 1000));
             }}
 
-            // 4. Verificar fila seleccionada
+            // 4. Verificar fila seleccionada y listar horas disponibles
             const seleccionada = document.querySelector('tr[data-gxselected]');
             const horaSelec = seleccionada ?
                 seleccionada.querySelector('span[id^="span_HORSEDHIN_"]')?.textContent?.trim() : 'ninguna';
 
+            // Listar todas las horas disponibles en la grilla actual
+            const todasHoras = Array.from(document.querySelectorAll('span[id^="span_HORSEDHIN_"]'))
+                .map(s => s.textContent.trim());
+
             return {{
                 dia: selDia ? selDia.value : 'no encontrado',
                 sede: selSede ? selSede.value : 'no encontrado',
-                horaSeleccionada: horaSelec
+                horaSeleccionada: horaSelec,
+                horasDisponibles: todasHoras
             }};
         }}
     """)
 
     log(f"   Estado JS — día={resultado['dia']}, sede={resultado['sede']}, hora={resultado['horaSeleccionada']}")
+    log(f"   Horas disponibles en grilla: {resultado.get('horasDisponibles', [])}")
     await esperar(500)
 
     # Click en Confirmar
@@ -421,6 +427,40 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
 
     await cerrar_modal_614(page)
     await esperar(500)
+
+
+async def validar_clase_programada(page, fecha_objetivo, label_hora):
+    """Verifica que la clase quedó realmente programada en la fecha y hora correctas."""
+    log(f"   🔎 Validando que {label_hora} quedó programada para {fecha_objetivo.strftime('%d/%m/%Y')}...")
+    
+    wv0613 = await get_wv0613_frame(page)
+    if not wv0613:
+        log("   ⚠️  No se pudo validar — frame wv0613 no encontrado")
+        return False
+
+    # Filtrar por Programadas
+    await wv0613.select_option("#vTPEAPROBO", "3")
+    await esperar(2000)
+
+    html = await wv0613.content()
+    fecha_str = fecha_objetivo.strftime("%d/%m/%y")
+    fecha_str2 = fecha_objetivo.strftime("%-d/%-m/%y")
+
+    # Buscar la fecha y hora en el HTML
+    fecha_ok = fecha_str in html or fecha_str2 in html
+    hora_ok = label_hora in html
+
+    if fecha_ok and hora_ok:
+        log(f"   ✅ Confirmado: clase {label_hora} programada para {fecha_objetivo.strftime('%d/%m/%Y')}")
+        resultado = True
+    else:
+        log(f"   ❌ NO se encontró la clase programada (fecha={fecha_ok}, hora={hora_ok})")
+        resultado = False
+
+    # Volver a "Todos los estados"
+    await wv0613.select_option("#vTPEAPROBO", "0")
+    await esperar(500)
+    return resultado
 
 
 async def agendar_clase(page, hora_config, fecha_objetivo):
@@ -482,6 +522,10 @@ async def main():
             for hora_config in horas:
                 try:
                     await agendar_clase(page, hora_config, fecha_objetivo)
+                    # Validar que realmente quedó programada
+                    ok = await validar_clase_programada(page, fecha_objetivo, hora_config["label"])
+                    if not ok:
+                        raise Exception(f"Clase {hora_config['label']} NO quedó programada en la plataforma")
                 except Exception as e:
                     log(f"⚠️  Error {hora_config['label']}: {e}")
                     errores.append(f"{hora_config['label']}: {e}")
