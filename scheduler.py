@@ -379,8 +379,40 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo):
 
     await esperar(600)
     log(f"   Hora {label_hora} seleccionada — confirmando...")
+
+    # Screenshot antes de confirmar para ver el estado
+    try:
+        await dia_frame.screenshot(path=f"antes_confirmar_{label_hora.replace(':','')}.png")
+        log(f"   📸 antes_confirmar_{label_hora.replace(':','')}.png")
+    except:
+        pass
+
+    # Log del HTML del frame para ver qué hay seleccionado
+    html_frame = await dia_frame.content()
+    import re
+    # Buscar aulas disponibles en la tabla
+    aulas = re.findall(r'<tr[^>]*data-gxrow[^>]*>.*?</tr>', html_frame, re.DOTALL)
+    log(f"   Filas en tabla de horarios: {len(aulas)}")
+    for a in aulas[:5]:
+        texto = re.sub(r'<[^>]+>', ' ', a).strip()
+        texto = ' '.join(texto.split())
+        log(f"     Fila: {texto[:120]}")
+
+    # Buscar el botón Confirmar
+    btn_confirmar = await dia_frame.query_selector("#BUTTON1")
+    btn_value = await btn_confirmar.get_attribute("value") if btn_confirmar else "NO ENCONTRADO"
+    log(f"   Botón #BUTTON1 value: {btn_value}")
+
     await dia_frame.click("#BUTTON1")
-    await esperar(1500)
+    await esperar(2000)
+
+    # Screenshot después de confirmar
+    try:
+        await page.screenshot(path=f"despues_confirmar_{label_hora.replace(':','')}.png", full_page=True)
+        log(f"   📸 despues_confirmar_{label_hora.replace(':','')}.png")
+    except:
+        pass
+
     log(f"   ✅ {label_hora} confirmada")
 
     # Cerrar el popup para que no bloquee la siguiente clase
