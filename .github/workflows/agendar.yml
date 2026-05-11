@@ -3,7 +3,7 @@ name: 📚 Agendar clases de inglés
 on:
   schedule:
     # Todos los días a las 8:00am Colombia (UTC-5) = 13:00 UTC
-    - cron: '0 13 * * *'
+    - cron: '0 15 * * 0-5
   
   # Permite ejecutar manualmente desde GitHub
   workflow_dispatch:
