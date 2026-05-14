@@ -1,11 +1,9 @@
-name: 📚 Agendar clases de inglés
+name: Agendar clases de inglés
 
 on:
   schedule:
-    # Todos los días a las 8:00am Colombia (UTC-5) = 13:00 UTC
-    - cron: '0 11 * * 0-5'
-  
-  # Permite ejecutar manualmente desde GitHub
+    # 6:10am Colombia (UTC-5) = 11:10am UTC
+   - cron: '0 11 * * 0-5'
   workflow_dispatch:
 
 jobs:
@@ -15,32 +13,36 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: 📥 Checkout del repositorio
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 🐍 Configurar Python 3.11
+      - name: Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Instalar dependencias
+      - name: Instalar dependencias
         run: |
           pip install playwright pytz
           playwright install chromium
           playwright install-deps chromium
 
-      - name: 🤖 Ejecutar agendador
+      - name: Ejecutar agendador
         env:
           SMART_USUARIO: ${{ secrets.SMART_USUARIO }}
           SMART_PASSWORD: ${{ secrets.SMART_PASSWORD }}
           SMART_PLAN: ${{ secrets.SMART_PLAN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          TWILIO_TO: ${{ secrets.TWILIO_TO }}
         run: python scheduler.py
 
-      - name: 📸 Subir screenshot de error (si hay)
-        if: failure()
+      - name: Subir artefactos de debug
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: error-screenshot
-          path: error_screenshot.png
+          name: screenshots
+          path: "*.png"
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
