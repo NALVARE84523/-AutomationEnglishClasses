@@ -14,6 +14,35 @@ from datetime import datetime, timedelta
 import pytz
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+import urllib.request
+import urllib.parse
+
+def enviar_whatsapp(mensaje: str):
+    """Envía mensaje de WhatsApp via Twilio Sandbox (gratis)."""
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    auth_token  = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    from_number = os.environ.get("TWILIO_FROM", "")   # whatsapp:+14155238886
+    to_number   = os.environ.get("TWILIO_TO", "")     # whatsapp:+57XXXXXXXXX
+
+    if not all([account_sid, auth_token, from_number, to_number]):
+        log("   ⚠️  WhatsApp no configurado — omitiendo notificación")
+        return
+
+    try:
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+        data = urllib.parse.urlencode({
+            "From": from_number,
+            "To": to_number,
+            "Body": mensaje
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        import base64
+        creds = base64.b64encode(f"{account_sid}:{auth_token}".encode()).decode()
+        req.add_header("Authorization", f"Basic {creds}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log(f"   📱 WhatsApp enviado (status {resp.status})")
+    except Exception as e:
+        log(f"   ⚠️  Error enviando WhatsApp: {e}")
 
 BASE_URL   = "https://schoolpack.smart.edu.co/idiomas"
 LOGIN_URL  = f"{BASE_URL}/alumnos.aspx"
@@ -432,12 +461,37 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
     log(f"   Horas disponibles en grilla: {resultado.get('horasDisponibles', [])}")
     await esperar(500)
 
+    # Verificar que hay una hora seleccionada antes de confirmar
+    sel_check = await dia_frame.query_selector("tr[data-gxselected]")
+    if not sel_check:
+        # Verificar si la grilla está vacía (no hay horarios disponibles ese día)
+        filas_grilla = await dia_frame.query_selector_all("tr[data-gxrow]")
+        if len(filas_grilla) == 0:
+            msg = (f"⚠️ No hay horarios disponibles para el "
+                   f"{fecha_objetivo.strftime('%d/%m/%Y')} en {hora_config.get('sede','la sede')}. "
+                   f"Posiblemente hay una actividad institucional ese día.")
+            log(f"   {msg}")
+            enviar_whatsapp(f"Smart Idiomas Bot:
+{msg}")
+            raise Exception(f"Sin horarios disponibles para {label_hora} el {fecha_objetivo.strftime('%d/%m/%Y')}")
+        else:
+            log(f"   ⚠️  Hay {len(filas_grilla)} filas pero ninguna seleccionada")
+            raise Exception(f"No se pudo seleccionar la hora {label_hora}")
+
     # Click en Confirmar
     log(f"   Confirmando...")
     await dia_frame.click("#BUTTON1")
     await esperar(2000)
-    log(f"   ✅ {label_hora} confirmada")
 
+    # Verificar que no apareció mensaje de error
+    error_msg = await dia_frame.query_selector(".gx-warning-message, .ErrorViewer")
+    if error_msg:
+        txt_error = await error_msg.text_content()
+        if txt_error and txt_error.strip():
+            log(f"   ❌ Error de plataforma: {txt_error.strip()}")
+            raise Exception(f"Error al confirmar: {txt_error.strip()}")
+
+    log(f"   ✅ {label_hora} confirmada")
     await cerrar_modal_614(page)
     await esperar(500)
 
@@ -563,6 +617,11 @@ async def main():
                 sys.exit(1)
             else:
                 log("✅ Todas las clases agendadas correctamente")
+                enviar_whatsapp(
+                    f"✅ Smart Idiomas Bot:\n"
+                    f"Clases agendadas para el {fecha_objetivo.strftime('%d/%m/%Y')}:\n" +
+                    "\n".join([f"  • {h['label']} en {h.get('sede','')}" for h in horas])
+                )
 
         except Exception as e:
             log(f"❌ Fatal: {e}")
