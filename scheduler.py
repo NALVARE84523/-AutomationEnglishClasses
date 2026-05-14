@@ -511,64 +511,65 @@ async def main():
 
     log(f"   Clases a agendar: {[h['label'] for h in horas]} para el {fecha_objetivo.strftime('%d/%m/%Y')}")
 
-    MAX_INTENTOS = 3
-    for intento in range(1, MAX_INTENTOS + 1):
-        log(f"\n🔄 --- INICIANDO INTENTO {intento} DE {MAX_INTENTOS} ---")
-        
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = await (await browser.new_context(
-                viewport={"width": 1280, "height": 900},
-                locale="es-CO",
-            )).new_page()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        page = await (await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            locale="es-CO",
+        )).new_page()
 
+        # Login con reintentos
+        for intento_login in range(3):
             try:
                 await hacer_login(page)
-                await ir_a_programacion(page)
-                await seleccionar_plan(page)
-
-                # Verificar si las clases ya están programadas
-                if await clases_ya_programadas(page, fecha_objetivo, horas):
-                    log("✅ Nada que hacer — clases ya programadas.")
-                    return # Termina la ejecución con éxito
-
-                errores = []
-                for hora_config in horas:
-                    try:
-                        await agendar_clase(page, hora_config, fecha_objetivo)
-                        # Validar que realmente quedó programada
-                        ok = await validar_clase_programada(page, fecha_objetivo, hora_config["label"])
-                        if not ok:
-                            raise Exception(f"Clase {hora_config['label']} NO quedó programada en la plataforma")
-                    except Exception as e:
-                        log(f"⚠️  Error {hora_config['label']}: {e}")
-                        errores.append(f"{hora_config['label']}: {e}")
-                        await screenshot(page, f"error_{hora_config['label'].replace(':','')}_intento{intento}.png")
-
-                if errores:
-                    for err in errores:
-                        log(f"   ❌ {err}")
-                    raise Exception("Hubo errores al agendar las clases") # Fuerza el except general para reintentar
-                else:
-                    log("✅ Todas las clases agendadas correctamente")
-                    return # ÉXITO: Salimos de la función y del bucle
-
+                break
             except Exception as e:
-                log(f"❌ Falló el intento {intento}: {e}")
-                await screenshot(page, f"error_general_intento{intento}.png")
-                
-                if intento == MAX_INTENTOS:
-                    log("❌ Se agotaron los intentos. El proceso falló definitivamente.")
-                    sys.exit(1) # Falla el Action en Github
-                else:
-                    log("⏳ Esperando 10 segundos antes de reintentar...")
-                    await asyncio.sleep(10)
-            
-            finally:
-                await browser.close()
+                log(f"⚠️  Login intento {intento_login+1}/3 fallido: {e}")
+                if intento_login == 2:
+                    raise Exception(f"Login fallido tras 3 intentos: {e}")
+                log("   Reintentando en 10 segundos...")
+                await esperar(10000)
+                await page.goto(LOGIN_URL, wait_until="load")
+                await esperar(2000)
+
+        try:
+            await ir_a_programacion(page)
+            await seleccionar_plan(page)
+
+            # Verificar si las clases ya están programadas
+            if await clases_ya_programadas(page, fecha_objetivo, horas):
+                log("✅ Nada que hacer — clases ya programadas.")
+                return
+
+            errores = []
+            for hora_config in horas:
+                try:
+                    await agendar_clase(page, hora_config, fecha_objetivo)
+                    # Validar que realmente quedó programada
+                    ok = await validar_clase_programada(page, fecha_objetivo, hora_config["label"])
+                    if not ok:
+                        raise Exception(f"Clase {hora_config['label']} NO quedó programada en la plataforma")
+                except Exception as e:
+                    log(f"⚠️  Error {hora_config['label']}: {e}")
+                    errores.append(f"{hora_config['label']}: {e}")
+                    await screenshot(page, f"error_{hora_config['label'].replace(':','')}.png")
+
+            if errores:
+                for err in errores:
+                    log(f"   ❌ {err}")
+                sys.exit(1)
+            else:
+                log("✅ Todas las clases agendadas correctamente")
+
+        except Exception as e:
+            log(f"❌ Fatal: {e}")
+            await screenshot(page)
+            raise
+        finally:
+            await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
