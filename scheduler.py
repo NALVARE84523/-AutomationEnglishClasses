@@ -471,8 +471,7 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
                    f"{fecha_objetivo.strftime('%d/%m/%Y')} en {hora_config.get('sede','la sede')}. "
                    f"Posiblemente hay una actividad institucional ese día.")
             log(f"   {msg}")
-            enviar_whatsapp(f"Smart Idiomas Bot:
-{msg}")
+            enviar_whatsapp(f"Smart Idiomas Bot:\n{msg}")
             raise Exception(f"Sin horarios disponibles para {label_hora} el {fecha_objetivo.strftime('%d/%m/%Y')}")
         else:
             log(f"   ⚠️  Hay {len(filas_grilla)} filas pero ninguna seleccionada")
