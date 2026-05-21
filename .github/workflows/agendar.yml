@@ -3,7 +3,7 @@ name: Agendar clases de inglés
 on:
   schedule:
     # 6:10am Colombia (UTC-5) = 11:10am UTC
-   - cron: '0 11 * * 0-5'
+   - cron: '0 10 * * 0-4'
   workflow_dispatch:
 
 jobs:
