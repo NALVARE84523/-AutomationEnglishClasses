@@ -128,9 +128,11 @@ async def hacer_login(page):
     if "wv0480" in page.url or "wv0527" in page.url:
         log("✅ Sesión activa")
         return
-
-    await page.type("#vUSUCOD", USUARIO, delay=80)
-    await page.type("#vPASS", PASSWORD, delay=80)
+      
+    await page.fill("#vUSUCOD", "")
+    await page.fill("#vPASS", "")
+    await page.locator("#vUSUCOD").press_sequentially(USUARIO, delay=80)
+    await page.locator("#vPASS").press_sequentially(PASSWORD, delay=80)
     await esperar(500)
     await page.keyboard.press("Tab")
     await esperar(300)
@@ -579,14 +581,19 @@ async def main():
             try:
                 await hacer_login(page)
                 break
-            except Exception as e:
+             except Exception as e:
                 log(f"⚠️  Login intento {intento_login+1}/3 fallido: {e}")
                 if intento_login == 2:
                     raise Exception(f"Login fallido tras 3 intentos: {e}")
                 log("   Reintentando en 10 segundos...")
                 await esperar(10000)
-                await page.goto(LOGIN_URL, wait_until="load")
-                await esperar(2000)
+                
+                # Destruir la página actual y crear una nueva
+                await page.close()
+                page = await (await browser.new_context(
+                    viewport={"width": 1280, "height": 900},
+                    locale="es-CO",
+                )).new_page()
 
         try:
             await ir_a_programacion(page)
