@@ -581,7 +581,7 @@ async def main():
             try:
                 await hacer_login(page)
                 break
-             except Exception as e:
+            except Exception as e:
                 log(f"⚠️  Login intento {intento_login+1}/3 fallido: {e}")
                 if intento_login == 2:
                     raise Exception(f"Login fallido tras 3 intentos: {e}")
