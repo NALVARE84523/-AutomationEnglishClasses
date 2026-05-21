@@ -494,8 +494,20 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
             if error_msg:
                 txt_error = await error_msg.text_content()
                 if txt_error and txt_error.strip():
-                    log(f"   ❌ Error de plataforma: {txt_error.strip()}")
-                    raise Exception(f"Error al confirmar: {txt_error.strip()}")
+                    txt_clean = txt_error.strip()
+                    log(f"   ❌ Error de plataforma: {txt_clean}")
+                    
+                    # Detectar específicamente si es por falta de cupos/disponibilidad
+                    if "validar disponibilidad" in txt_clean.lower() or "cupos" in txt_clean.lower():
+                        msg_cupos = (
+                            f"⚠️ Smart Idiomas Bot:\n"
+                            f"No se pudo agendar la clase de las {label_hora} en {sede_nombre} "
+                            f"para el {fecha_objetivo.strftime('%d/%m/%Y')} porque NO hay cupos disponibles."
+                        )
+                        enviar_whatsapp(msg_cupos)
+                        raise Exception(f"Sin cupos disponibles para {label_hora} en {sede_nombre}")
+                    
+                    raise Exception(f"Error al confirmar: {txt_clean}")
         except Exception as e:
             # Capturar por si el frame se destruye una fracción de segundo después
             if "detached" in str(e):
