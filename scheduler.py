@@ -484,13 +484,24 @@ async def seleccionar_dia_y_hora(page, label_hora, fecha_objetivo, hora_config=N
     await dia_frame.click("#BUTTON1")
     await esperar(2000)
 
-    # Verificar que no apareció mensaje de error
-    error_msg = await dia_frame.query_selector(".gx-warning-message, .ErrorViewer")
-    if error_msg:
-        txt_error = await error_msg.text_content()
-        if txt_error and txt_error.strip():
-            log(f"   ❌ Error de plataforma: {txt_error.strip()}")
-            raise Exception(f"Error al confirmar: {txt_error.strip()}")
+    # Si el frame ya no existe en el DOM, es porque la plataforma lo cerró al tener éxito
+    if dia_frame.is_detached():
+        log("   Modal cerrado automáticamente (éxito en la confirmación).")
+    else:
+        try:
+            # Verificar que no apareció mensaje de error en la UI
+            error_msg = await dia_frame.query_selector(".gx-warning-message, .ErrorViewer")
+            if error_msg:
+                txt_error = await error_msg.text_content()
+                if txt_error and txt_error.strip():
+                    log(f"   ❌ Error de plataforma: {txt_error.strip()}")
+                    raise Exception(f"Error al confirmar: {txt_error.strip()}")
+        except Exception as e:
+            # Capturar por si el frame se destruye una fracción de segundo después
+            if "detached" in str(e):
+                log("   Modal se cerró mientras se verificaban errores.")
+            else:
+                raise e
 
     log(f"   ✅ {label_hora} confirmada")
     await cerrar_modal_614(page)
